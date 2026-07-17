@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <!-- Needed to reference System.Windows.Forms.ToolStripMenuItem via reflection in TrayIconServiceUiTests (see AudioTranscriber.App.csproj for why TrayIconService now uses WinForms.NotifyIcon). -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <!--
+    NOTA: se probó primero con Xunit.StaFact ([StaFact]), pero arranca un thread STA nuevo POR
+    CADA test, lo que choca con la afinidad de thread fija de System.Windows.Application (ver
+    UiThread.cs para el detalle real del problema y la solución: un único thread STA persistente
+    para todo el proceso, con Dispatcher.Invoke marshaleando cada test). Se sacó la dependencia.
+  -->
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <!-- Same reasoning as AudioTranscriber.App.csproj: avoid project-wide global usings for
+         System.Windows.Forms / System.Drawing colliding with System.Windows types. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AudioTranscriber.App\AudioTranscriber.App.csproj" />
+  </ItemGroup>
+
+</Project>

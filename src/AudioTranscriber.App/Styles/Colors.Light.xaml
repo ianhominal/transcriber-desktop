@@ -1,0 +1,113 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        ===== Paleta central (semántica) — TEMA CLARO =====
+        Única fuente de verdad de color para el tema claro. Mismas claves que Colors.Dark.xaml (ver
+        ese archivo): ThemeManager reemplaza en runtime cuál de los dos está mergeado en
+        Application.Resources.MergedDictionaries según AppSettings.Theme. Cualquier ventana nueva
+        debe consumir estos recursos vía DynamicResource (nunca StaticResource ni colores
+        hardcodeados) para que el cambio de tema se vea en vivo.
+    -->
+
+    <!-- Acento (marca) -->
+    <Color x:Key="AccentColor">#4F46E5</Color>
+    <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="AccentHover" Color="#4338CA"/>
+    <SolidColorBrush x:Key="AccentPressed" Color="#3730A3"/>
+    <SolidColorBrush x:Key="AccentSoft" Color="#EEEDFC"/>
+
+    <!-- Acento como TINTA (texto/íconos), NO como relleno. Ver el comentario largo en
+         Colors.Dark.xaml. Acá coincide con Accent porque sobre superficies claras ya contrasta
+         bien; existe igual como clave propia para que los consumidores de texto no dependan del
+         color de relleno (si mañana la marca cambia de tono, se ajusta una sola cosa). -->
+    <SolidColorBrush x:Key="AccentText" Color="#4F46E5"/>
+
+    <!-- Colores de hablante para la vista "Leer" (ver Colors.Dark.xaml para el porqué). Tonos
+         oscuros para contrastar sobre Surface blanco (#FFFFFF), AA 4.5:1, medido en
+         PaletteContrastTests. Mismas claves que el tema oscuro. -->
+    <SolidColorBrush x:Key="Speaker0" Color="#4F46E5"/>
+    <SolidColorBrush x:Key="Speaker1" Color="#0F766E"/>
+    <SolidColorBrush x:Key="Speaker2" Color="#BE123C"/>
+    <SolidColorBrush x:Key="Speaker3" Color="#B45309"/>
+    <SolidColorBrush x:Key="Speaker4" Color="#0369A1"/>
+    <SolidColorBrush x:Key="Speaker5" Color="#6D28D9"/>
+    <SolidColorBrush x:Key="SpeakerNeutral" Color="#636B7C"/>
+
+    <!-- Superficies -->
+    <SolidColorBrush x:Key="Bg" Color="#F4F5F7"/>
+    <SolidColorBrush x:Key="Surface" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="SurfaceAlt" Color="#F6F7F9"/>
+    <SolidColorBrush x:Key="SurfacePressed" Color="#EDEEF2"/>
+
+    <!-- Bordes -->
+    <SolidColorBrush x:Key="Border" Color="#E6E8EC"/>
+    <SolidColorBrush x:Key="BorderStrong" Color="#D3D7DE"/>
+
+    <!-- Texto -->
+    <SolidColorBrush x:Key="TextPrimary" Color="#1A1D23"/>
+    <SolidColorBrush x:Key="TextSecondary" Color="#5B6270"/>
+    <!-- Oscurecido desde #8A909C: ese daba 2.94:1 sobre Bg y 2.77:1 sobre AccentSoft, muy por debajo
+         de AA. No es decoración: pinta tamaños de archivo, fechas y estados — texto que se lee. -->
+    <SolidColorBrush x:Key="TextMuted" Color="#636B7C"/>
+    <SolidColorBrush x:Key="TextOnAccent" Color="#FFFFFF"/>
+
+    <!-- Estados semánticos -->
+    <SolidColorBrush x:Key="Success" Color="#16A34A"/>
+    <SolidColorBrush x:Key="SuccessSoft" Color="#E9F8EF"/>
+    <SolidColorBrush x:Key="Warning" Color="#D97706"/>
+    <SolidColorBrush x:Key="WarningSoft" Color="#FDF3E4"/>
+    <SolidColorBrush x:Key="Danger" Color="#DC2626"/>
+    <SolidColorBrush x:Key="DangerHover" Color="#B91C1C"/>
+    <SolidColorBrush x:Key="DangerSoft" Color="#FCEAEA"/>
+
+    <!-- Deshabilitado -->
+    <SolidColorBrush x:Key="DisabledSurface" Color="#C4C6D2"/>
+    <SolidColorBrush x:Key="DisabledText" Color="#A7ABB6"/>
+
+    <!-- Texto sobre un botón deshabilitado con relleno. Clave propia, separada de DisabledText:
+         ver el comentario en Colors.Dark.xaml. Reemplaza al "White" hardcodeado de Buttons.xaml:46,
+         que sobre DisabledSurface daba 1.70:1 — el botón no se leía como apagado: no se leía. -->
+    <SolidColorBrush x:Key="DisabledTextOnDisabledSurface" Color="#4A4E58"/>
+
+    <!-- Texto sobre los botones de peligro. Acá el rojo es oscuro, así que la tinta va blanca
+         (en el tema oscuro, donde el rojo es claro, va oscura). -->
+    <SolidColorBrush x:Key="TextOnDanger" Color="#FFFFFF"/>
+
+    <!-- Foco de teclado (accesibilidad). SIN Opacity — ver el comentario en Colors.Dark.xaml:
+         antes era el acento a 0.55 y daba 2.45:1 sobre Bg. Indigo 900: contrasta fuerte sobre las
+         superficies claras sin competir con el acento de los botones. -->
+    <SolidColorBrush x:Key="FocusRing" Color="#312E81"/>
+
+    <!-- Panel oscuro (log de progreso detallado) -->
+    <SolidColorBrush x:Key="Ink" Color="#17181F"/>
+    <SolidColorBrush x:Key="InkText" Color="#C9CCD6"/>
+
+    <!-- Controles de scroll / slider -->
+    <SolidColorBrush x:Key="ScrollThumb" Color="#C7CAD3"/>
+    <SolidColorBrush x:Key="ScrollThumbHover" Color="#A7ABB6"/>
+
+    <!--
+        ===== Paleta "color por proyecto" (F2, ver changelog) — TEMA CLARO =====
+        12 ids fijos, mismo orden y mismos ids que ProjectColorPalette.Ids (Core) y que el sibling
+        web (audio-transcriber-web): la clave acá es "Project" + Id con la primera letra en
+        mayúscula. Convención de esta app (igual criterio que el resto de Colors.Light.xaml vs.
+        Colors.Dark.xaml): tema claro = shade 600 de cada familia Tailwind (fuerte, buen contraste
+        sobre superficies claras). Consumido vía ProjectColorToBrushConverter (Converters.cs), NO
+        directo por nombre fijo en XAML, para poder resolver dinámicamente el id string que trae
+        AudioProject.Color.
+    -->
+    <SolidColorBrush x:Key="ProjectRed" Color="#DC2626"/>
+    <SolidColorBrush x:Key="ProjectOrange" Color="#EA580C"/>
+    <SolidColorBrush x:Key="ProjectAmber" Color="#D97706"/>
+    <SolidColorBrush x:Key="ProjectGreen" Color="#16A34A"/>
+    <SolidColorBrush x:Key="ProjectTeal" Color="#0D9488"/>
+    <SolidColorBrush x:Key="ProjectCyan" Color="#0891B2"/>
+    <SolidColorBrush x:Key="ProjectBlue" Color="#2563EB"/>
+    <SolidColorBrush x:Key="ProjectIndigo" Color="#4F46E5"/>
+    <SolidColorBrush x:Key="ProjectViolet" Color="#7C3AED"/>
+    <SolidColorBrush x:Key="ProjectPurple" Color="#9333EA"/>
+    <SolidColorBrush x:Key="ProjectPink" Color="#DB2777"/>
+    <SolidColorBrush x:Key="ProjectRose" Color="#E11D48"/>
+
+</ResourceDictionary>

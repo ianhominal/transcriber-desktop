@@ -1,0 +1,106 @@
+<Window x:Class="AudioTranscriber.App.ProjectInfoDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        SizeToContent="Height" Width="460" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource Surface}" FontFamily="Segoe UI" FontSize="14"
+        Foreground="{DynamicResource TextPrimary}" Title="Información del proyecto">
+    <!--
+        Picker de "color por proyecto" (F2): 12 swatches + "Sin color" explícito, todos
+        RadioButton del mismo GroupName (selección mutuamente excluyente, como cualquier picker de
+        opción única). Un solo ControlTemplate (ColorSwatchStyle) sirve para las 13 opciones:
+        - Los 12 swatches de color llevan Tag="{id}" y Background="{DynamicResource ProjectXxx}".
+        - El swatch "Sin color" lleva Tag="{x:Null}" y Background="Transparent"; un Trigger sobre
+          Tag=null en el template le agrega una diagonal (Slash) para que se distinga de un
+          swatch "vacío" por error, y ajusta el color del check a algo visible sobre fondo
+          transparente (ambos casos comparten el mismo anillo/check de selección).
+        Selección leída en code-behind (ProjectColor) iterando los RadioButton del WrapPanel: no
+        hace falta binding a un ViewModel para un diálogo modal simple como este (mismo patrón de
+        code-behind que TitleBox/DescBox de acá arriba).
+    -->
+    <Window.Resources>
+        <Style x:Key="ColorSwatchStyle" TargetType="RadioButton">
+            <Setter Property="GroupName" Value="ProjectColor"/>
+            <Setter Property="Width" Value="24"/>
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="Margin" Value="4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Grid Width="24" Height="24">
+                            <Ellipse Fill="{TemplateBinding Background}"
+                                     Stroke="{DynamicResource BorderStrong}" StrokeThickness="1"/>
+                            <Path x:Name="Slash" Data="M5,19 L19,5" Stroke="{DynamicResource TextMuted}"
+                                  StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Visibility="Collapsed"/>
+                            <Ellipse x:Name="Ring" Stroke="{DynamicResource TextPrimary}" StrokeThickness="2"
+                                     Margin="-3" Visibility="Collapsed"/>
+                            <Path x:Name="Check" Visibility="Collapsed"
+                                  Data="M4,12 L10,18 L20,6" Stroke="White" StrokeThickness="2.5"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                  Stretch="Uniform" Width="12" Height="12"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Tag" Value="{x:Null}">
+                                <Setter TargetName="Slash" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="Check" Property="Stroke" Value="{DynamicResource TextPrimary}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Ring" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <StackPanel Margin="20">
+        <TextBlock Text="Título" Foreground="{DynamicResource TextSecondary}" Margin="2,0,0,4"/>
+        <TextBox x:Name="TitleBox" Style="{StaticResource InputBox}" Padding="8,7"/>
+
+        <TextBlock Text="Descripción / notas del proyecto" Foreground="{DynamicResource TextSecondary}"
+                   Margin="2,14,0,4"/>
+        <TextBox x:Name="DescBox" Style="{StaticResource InputBox}" Padding="8,7"
+                 MinLines="3" MaxLines="8" AcceptsReturn="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto"/>
+
+        <TextBlock Text="Color" Foreground="{DynamicResource TextSecondary}" Margin="2,14,0,4"/>
+        <WrapPanel x:Name="ColorSwatches" Orientation="Horizontal">
+            <RadioButton x:Name="SwatchNone" Style="{StaticResource ColorSwatchStyle}" Tag="{x:Null}"
+                         Background="Transparent" ToolTip="Sin color"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="red"
+                         Background="{DynamicResource ProjectRed}" ToolTip="Rojo"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="orange"
+                         Background="{DynamicResource ProjectOrange}" ToolTip="Naranja"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="amber"
+                         Background="{DynamicResource ProjectAmber}" ToolTip="Ámbar"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="green"
+                         Background="{DynamicResource ProjectGreen}" ToolTip="Verde"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="teal"
+                         Background="{DynamicResource ProjectTeal}" ToolTip="Turquesa"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="cyan"
+                         Background="{DynamicResource ProjectCyan}" ToolTip="Celeste"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="blue"
+                         Background="{DynamicResource ProjectBlue}" ToolTip="Azul"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="indigo"
+                         Background="{DynamicResource ProjectIndigo}" ToolTip="Índigo"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="violet"
+                         Background="{DynamicResource ProjectViolet}" ToolTip="Violeta"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="purple"
+                         Background="{DynamicResource ProjectPurple}" ToolTip="Púrpura"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="pink"
+                         Background="{DynamicResource ProjectPink}" ToolTip="Rosa"/>
+            <RadioButton Style="{StaticResource ColorSwatchStyle}" Tag="rose"
+                         Background="{DynamicResource ProjectRose}" ToolTip="Coral"/>
+        </WrapPanel>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="Cancelar" Style="{StaticResource SecondaryButton}"
+                    Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="Guardar" Style="{StaticResource PrimaryButton}"
+                    IsDefault="True" Click="OnOk"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -1,0 +1,321 @@
+<Window x:Class="AudioTranscriber.App.NoteDetailWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:AudioTranscriber.App.Controls"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Audio Transcriber" Height="760" Width="1080"
+        MinHeight="520" MinWidth="820"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource Bg}" FontFamily="Segoe UI" FontSize="14"
+        Foreground="{DynamicResource TextPrimary}">
+
+    <!-- Detalle NATIVO de una nota (reemplaza al viejo WebView2 embebido, ver changelog
+         2026-07-13 "Híbrido nativo"): mismo WindowChrome/TitleBar que el resto de las ventanas. -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="36"
+                             ResizeBorderThickness="6"
+                             GlassFrameThickness="0"
+                             CornerRadius="0"
+                             UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <controls:TitleBar x:Name="WindowTitleBar" Grid.Row="0" TitleText="Nota"/>
+
+        <Grid Grid.Row="1" Margin="18">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="18"/>
+                <ColumnDefinition Width="380"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ===================== Transcripción (solo lectura) ===================== -->
+            <Border Grid.Column="0" Style="{StaticResource Card}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="{Binding Title}" Style="{StaticResource TitleText}"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="Transcripción" Style="{StaticResource CaptionText}" Margin="0,4,0,0"/>
+                        </StackPanel>
+
+                        <!-- Copiar con formato / Exportar (2026-07-14): ver NoteDetailViewModel. -->
+                        <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Copiar" Style="{StaticResource SecondaryButton}"
+                                        Margin="8,0,0,0" Command="{Binding CopyTranscriptCommand}"/>
+                                <Button Content="Exportar" Style="{StaticResource SecondaryButton}"
+                                        Margin="8,0,0,0" Command="{Binding ExportNoteCommand}"/>
+                            </StackPanel>
+                            <TextBlock Text="{Binding OperationStatusText}" FontSize="11" HorizontalAlignment="Right"
+                                       Margin="0,4,0,0" Foreground="{DynamicResource Success}"
+                                       Visibility="{Binding OperationStatusText, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <Border Grid.Row="1" Background="{DynamicResource SurfaceAlt}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1">
+                        <!-- Foreground explícito: sin Style propio, el TextBox usa la plantilla default
+                             de WPF (fija su propio Foreground, no hereda del Window) y quedaba casi
+                             del mismo color que el fondo oscuro, por eso "no se leía nada" acá
+                             (ver changelog 2026-07-13, "Contraste de texto"). -->
+                        <TextBox Text="{Binding TranscriptText, Mode=OneWay}" IsReadOnly="True"
+                                 TextWrapping="Wrap" AcceptsReturn="True"
+                                 VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                                 Background="Transparent" Foreground="{DynamicResource TextPrimary}"
+                                 Padding="14" FontSize="14"/>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- ===================== Asistente IA (Resumen / Formatos) ===================== -->
+            <Border Grid.Column="2" Style="{StaticResource Card}" Padding="0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="18">
+                        <TextBlock Text="Asistente IA" Style="{StaticResource HeadingText}"/>
+                        <TextBlock Text="{Binding OperationStatusText}" FontSize="11" Margin="0,4,0,0"
+                                   Foreground="{DynamicResource Success}"
+                                   Visibility="{Binding OperationStatusText, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+
+                        <!-- ==== Resumen ==== -->
+                        <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="10" Padding="14" Margin="0,14,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Resumen" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                    <controls:Spinner Grid.Column="1" Width="16" Height="16" VerticalAlignment="Center"
+                                                       Visibility="{Binding IsSummaryBusy, Converter={StaticResource BoolToVisibility}}"/>
+                                    <Button Grid.Column="1" Content="{Binding SummarizeButtonText}"
+                                            Style="{StaticResource SecondaryButton}"
+                                            Command="{Binding SummarizeCommand}"
+                                            Visibility="{Binding IsSummaryBusy, Converter={StaticResource InverseBoolToVisibility}}"/>
+                                </Grid>
+
+                                <TextBlock Text="{Binding SummaryError}" Foreground="{DynamicResource Danger}"
+                                           TextWrapping="Wrap" FontSize="12" Margin="0,8,0,0"
+                                           Visibility="{Binding SummaryError, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+
+                                <StackPanel Visibility="{Binding HasSummary, Converter={StaticResource BoolToVisibility}}"
+                                            Margin="0,10,0,0">
+                                    <Button Content="Copiar resumen" Style="{StaticResource LinkButton}" FontSize="11"
+                                            HorizontalAlignment="Right" Command="{Binding CopySummaryCommand}"/>
+                                    <TextBlock Text="{Binding SummaryText}" TextWrapping="Wrap" FontSize="13"/>
+
+                                    <TextBlock Text="Puntos clave" FontWeight="SemiBold" FontSize="12" Margin="0,12,0,4"
+                                               Foreground="{DynamicResource TextSecondary}"
+                                               Visibility="{Binding KeyPoints.Count, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+                                    <ItemsControl ItemsSource="{Binding KeyPoints}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding StringFormat='•  {0}'}" TextWrapping="Wrap"
+                                                           FontSize="13" Margin="0,2,0,2"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <TextBlock Text="Tareas" FontWeight="SemiBold" FontSize="12" Margin="0,12,0,4"
+                                               Foreground="{DynamicResource TextSecondary}"
+                                               Visibility="{Binding ActionItems.Count, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+                                    <ItemsControl ItemsSource="{Binding ActionItems}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding StringFormat='☐  {0}'}" TextWrapping="Wrap"
+                                                           FontSize="13" Margin="0,2,0,2"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ==== Formatos ==== -->
+                        <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="10" Padding="14" Margin="0,12,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Formatos" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                    <controls:Spinner Grid.Column="1" Width="16" Height="16" VerticalAlignment="Center"
+                                                       Visibility="{Binding IsRecipesLoading, Converter={StaticResource BoolToVisibility}}"/>
+                                </Grid>
+
+                                <TextBlock Text="{Binding RecipesError}" Foreground="{DynamicResource Danger}"
+                                           TextWrapping="Wrap" FontSize="12" Margin="0,8,0,0"
+                                           Visibility="{Binding RecipesError, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+
+                                <!-- Empty state: el usuario todavía no creó ningún formato en la web. -->
+                                <TextBlock Text="Todavía no tenés formatos guardados. Creá uno desde la web (Ajustes → Formatos)."
+                                           TextWrapping="Wrap" FontSize="12" Margin="0,8,0,0"
+                                           Foreground="{DynamicResource TextMuted}"
+                                           Visibility="{Binding Recipes.Count, Converter={StaticResource CountToVisibility}}"/>
+
+                                <StackPanel Visibility="{Binding Recipes.Count, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"
+                                            Margin="0,10,0,0">
+                                    <ComboBox ItemsSource="{Binding Recipes}" SelectedItem="{Binding SelectedRecipe}"
+                                              DisplayMemberPath="Name" Height="34"/>
+
+                                    <Button Content="Aplicar" Style="{StaticResource PrimaryButton}"
+                                            Command="{Binding ApplyRecipeCommand}" Margin="0,10,0,0"
+                                            HorizontalAlignment="Left"
+                                            Visibility="{Binding IsApplyingRecipe, Converter={StaticResource InverseBoolToVisibility}}"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0"
+                                                Visibility="{Binding IsApplyingRecipe, Converter={StaticResource BoolToVisibility}}">
+                                        <controls:Spinner Width="16" Height="16" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Aplicando…" VerticalAlignment="Center" FontSize="12"
+                                                   Foreground="{DynamicResource TextSecondary}"/>
+                                    </StackPanel>
+
+                                    <TextBlock Text="{Binding RecipeError}" Foreground="{DynamicResource Danger}"
+                                               TextWrapping="Wrap" FontSize="12" Margin="0,8,0,0"
+                                               Visibility="{Binding RecipeError, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+
+                                    <Border Background="{DynamicResource Surface}" CornerRadius="8"
+                                            BorderBrush="{DynamicResource Border}" BorderThickness="1"
+                                            Padding="10" Margin="0,10,0,0" MinHeight="40"
+                                            Visibility="{Binding RecipeOutputText, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}">
+                                        <StackPanel>
+                                            <Button Content="Copiar salida" Style="{StaticResource LinkButton}" FontSize="11"
+                                                    HorizontalAlignment="Right" Command="{Binding CopyRecipeOutputCommand}"/>
+                                            <TextBox Text="{Binding RecipeOutputText, Mode=OneWay}" IsReadOnly="True"
+                                                     TextWrapping="Wrap" AcceptsReturn="True" BorderThickness="0"
+                                                     Background="Transparent" Foreground="{DynamicResource TextPrimary}"
+                                                     FontSize="13"
+                                                     VerticalScrollBarVisibility="Auto" MaxHeight="260"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ==== Chat con IA (2026-07-14, UNIFICADO: ver NoteDetailViewModel.ChatScope) ====
+                             Reemplaza las dos features separadas que tenía el desktop (este chat por
+                             nota + la ventana aparte "Segundo cerebro"): un único "Chat con IA" con
+                             selector de alcance, mismo criterio que la unificación ya hecha en la web
+                             (commit 7f20a43). -->
+                        <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="10" Padding="14" Margin="0,12,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Chat con IA" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                    <ComboBox Grid.Column="1" FontSize="11" Width="150" SelectedValuePath="Tag"
+                                              SelectedValue="{Binding ChatScope}"
+                                              AutomationProperties.Name="Alcance del chat con IA">
+                                        <ComboBoxItem Content="Esta nota" Tag="note"/>
+                                        <ComboBoxItem Content="Todas mis notas" Tag="all"/>
+                                    </ComboBox>
+                                </Grid>
+                                <TextBlock Text="Preguntale a la IA sobre esta transcripción, o cambiá el alcance arriba para preguntar sobre todas tus notas."
+                                           TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0"
+                                           Foreground="{DynamicResource TextMuted}"/>
+
+                                <!-- Región viva: cada mensaje nuevo se anuncia a un lector de pantalla,
+                                     mismo criterio ARIA que chat-panel.tsx (rol "log", no "status", porque
+                                     acá se ACUMULA una lista en vez de reemplazar un único resultado). -->
+                                <ScrollViewer x:Name="ChatMessagesScroll" MaxHeight="320" Margin="0,10,0,0"
+                                              VerticalScrollBarVisibility="Auto"
+                                              AutomationProperties.LiveSetting="Polite">
+                                    <ItemsControl ItemsSource="{Binding ChatMessages}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border CornerRadius="10" Padding="10,7" Margin="0,0,0,8" MaxWidth="280">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="{DynamicResource Surface}"/>
+                                                            <Setter Property="HorizontalAlignment" Value="Left"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                                                    <Setter Property="Background" Value="{DynamicResource Accent}"/>
+                                                                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="13">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+
+                                                        <!-- "Guardar como nota" solo en respuestas del asistente. -->
+                                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                                                    Visibility="{Binding IsUser, Converter={StaticResource InverseBoolToVisibility}}">
+                                                            <Button Content="{Binding SaveNoteLabel}" Style="{StaticResource LinkButton}"
+                                                                    FontSize="11" IsEnabled="{Binding CanSaveAsNote}"
+                                                                    Command="{Binding DataContext.SaveChatMessageAsNoteCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                    CommandParameter="{Binding}"/>
+                                                        </StackPanel>
+                                                        <TextBlock Text="{Binding SaveNoteError}" Foreground="{DynamicResource Danger}"
+                                                                   TextWrapping="Wrap" FontSize="11" Margin="0,4,0,0"
+                                                                   Visibility="{Binding SaveNoteError, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+
+                                <TextBlock Text="{Binding ChatError}" Foreground="{DynamicResource Danger}"
+                                           TextWrapping="Wrap" FontSize="12" Margin="0,8,0,0"
+                                           Visibility="{Binding ChatError, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBox Grid.Column="0" Style="{StaticResource InputBox}"
+                                              Text="{Binding ChatInput, UpdateSourceTrigger=PropertyChanged}"
+                                              IsEnabled="{Binding IsChatBusy, Converter={StaticResource InverseBoolean}}"
+                                              AutomationProperties.Name="Mensaje para la IA">
+                                        <TextBox.InputBindings>
+                                            <KeyBinding Key="Return" Command="{Binding SendChatMessageCommand}"/>
+                                        </TextBox.InputBindings>
+                                    </TextBox>
+
+                                    <Button Grid.Column="2" Content="Enviar" Style="{StaticResource PrimaryButton}"
+                                            Command="{Binding SendChatMessageCommand}"
+                                            Visibility="{Binding IsChatBusy, Converter={StaticResource InverseBoolToVisibility}}"/>
+                                    <Button Grid.Column="2" Content="Detener" Style="{StaticResource SecondaryButton}"
+                                            Command="{Binding StopChatCommand}"
+                                            Visibility="{Binding IsChatBusy, Converter={StaticResource BoolToVisibility}}"/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

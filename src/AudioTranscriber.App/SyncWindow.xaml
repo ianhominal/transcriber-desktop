@@ -1,0 +1,108 @@
+<Window x:Class="AudioTranscriber.App.SyncWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:AudioTranscriber.App.Controls"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Sincronización" Height="580" Width="480"
+        ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource Bg}" FontFamily="Segoe UI" FontSize="14"
+        Foreground="{DynamicResource TextPrimary}">
+
+    <!-- Custom title bar, same contract as MainWindow (see its XAML comment). NoResize, so no
+         resize border and no maximize button (ShowMaximizeRestore="False" below). -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="36"
+                             ResizeBorderThickness="0"
+                             GlassFrameThickness="0"
+                             CornerRadius="0"
+                             UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <!-- DataContext = SyncCoordinator.Instance, seteado en code-behind: es la MISMA instancia
+         que usan MainWindow y el menú de la bandeja, para que el estado de sync sea consistente
+         en toda la app (ver comentario en SyncCoordinator.cs). -->
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <controls:TitleBar Grid.Row="0" TitleText="Sincronización" ShowMaximizeRestore="False"/>
+
+    <!-- Ventana con tamaño FIJO a propósito (NoResize): que se pueda maximizar/redimensionar
+         quedaba raro para un diálogo de este tipo. El alto (580) ya contempla el perfil de
+         usuario + carpeta + estado + cartel de error con margen; se mantiene el ScrollViewer
+         igual como red de seguridad para no volver a cortar contenido si el error es muy largo
+         (ver bug original que motivó agrandar esta ventana). -->
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <Border Style="{StaticResource Card}" Margin="18">
+        <StackPanel Margin="20">
+            <TextBlock Text="Sincronización con la nube" Style="{StaticResource HeadingText}" Margin="0,0,0,10"/>
+
+            <TextBlock Text="Cuenta" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+            <!-- C.4 (DESIGN-REVIEW-2026-07-16.md): bloque de Cuenta extraído a UserControl (ver
+                 Controls/AccountPanel.xaml). Compact="True" = tamaño de esta ventana (avatar
+                 40px); el Margin="0,0,0,14" va acá, en el sitio de uso (no dentro del control:
+                 SettingsWindow no lo necesita). Hereda el DataContext de SyncWindow. -->
+            <controls:AccountPanel Compact="True" Margin="0,0,0,14"/>
+
+            <!-- A.6/B.3 (DESIGN-REVIEW-2026-07-16.md): "tu carpeta" en vez de "Carpeta de trabajo",
+                 mismo nombre en toda la app. Es todo o nada con el botón citado abajo: si uno de
+                 los dos queda desactualizado, manda al usuario a buscar un botón que no existe. -->
+            <TextBlock Text="Tu carpeta (se sincroniza sola)" Style="{StaticResource SectionLabel}" Margin="2,0,0,4"/>
+            <TextBox Style="{StaticResource InputBox}" IsReadOnly="True"
+                     Text="{Binding SyncFolder, Mode=OneWay, TargetNullValue='Sin configurar'}" Margin="0,0,0,4"/>
+            <!-- Único selector de carpeta de toda la app: "Cambiar carpeta…" en MainWindow
+                 (ver MainViewModel.OpenWorkspaceCommand). Acá solo se muestra, para no volver a
+                 tener dos pickers independientes (el bug original que motivó esta unificación). -->
+            <TextBlock Text="Para cambiarla, usá 'Cambiar carpeta…' en la ventana principal."
+                       FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="2,0,0,14"/>
+
+            <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0" Content="Sincronizar ahora" Style="{StaticResource PrimaryButton}"
+                        HorizontalAlignment="Left" Command="{Binding SyncNowCommand}"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <controls:Spinner Width="13" Height="13" Margin="0,0,6,0"
+                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"/>
+                    <TextBlock Text="{Binding DisplayStatus}" VerticalAlignment="Center"
+                               FontWeight="SemiBold" FontSize="12"
+                               Foreground="{DynamicResource TextSecondary}"/>
+                </StackPanel>
+            </Grid>
+
+            <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="8" Padding="10,8" Margin="0,6,0,0">
+                <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextSecondary}"/>
+            </Border>
+
+            <!-- Detalle del error real (excepción/HTTP) cuando la sync falla. Solo visible si hay
+                 algo que mostrar: en éxito o antes del primer sync, LastError queda vacío. -->
+            <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="8" Padding="10,8" Margin="0,8,0,0">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasError}" Value="True">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel>
+                    <TextBlock Text="{Binding LastError}" TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource TextSecondary}"/>
+                    <Button Content="Ver log" Style="{StaticResource SecondaryButton}"
+                            HorizontalAlignment="Left" Margin="0,6,0,0"
+                            Command="{Binding ViewLogCommand}"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Border>
+    </ScrollViewer>
+    </Grid>
+</Window>

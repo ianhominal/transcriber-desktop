@@ -1,0 +1,357 @@
+<Window x:Class="AudioTranscriber.App.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:AudioTranscriber.App.Controls"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Configuración" Height="640" Width="480"
+        ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource Bg}" FontFamily="Segoe UI" FontSize="14"
+        Foreground="{DynamicResource TextPrimary}">
+
+    <!-- Custom title bar, same contract as MainWindow (see its XAML comment for the WindowChrome
+         details). ResizeBorderThickness="0" because this window is ResizeMode="NoResize" — no
+         resize handle needed on the edges; TitleBar's ShowMaximizeRestore="False" below hides the
+         maximize button for the same reason (nothing to maximize into). -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="36"
+                             ResizeBorderThickness="0"
+                             GlassFrameThickness="0"
+                             CornerRadius="0"
+                             UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <!-- DataContext = SyncCoordinator.Instance (misma instancia que MainWindow/SyncWindow/tray):
+         la sección "Cuenta" y "Tu carpeta" leen de ahí. Los toggles de "Comportamiento"
+         se manejan a mano en code-behind contra AppSettings.Instance / AutoStartHelper porque
+         AppSettings no es un ObservableObject (ver SettingsWindow.xaml.cs). -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <controls:TitleBar Grid.Row="0" TitleText="Configuración" ShowMaximizeRestore="False"/>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="18">
+
+        <TextBlock Text="Configuración" Style="{StaticResource TitleText}" Margin="4,4,0,14"/>
+
+        <!-- ===== Cuenta ===== -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Cuenta" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+
+                <!-- C.4 (DESIGN-REVIEW-2026-07-16.md): bloque de Cuenta extraído a UserControl
+                     (ver Controls/AccountPanel.xaml). Default (Compact="False") = tamaño de esta
+                     ventana (avatar 44px). Hereda el DataContext de SettingsWindow. -->
+                <controls:AccountPanel/>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== Apariencia ===== -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Apariencia" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Tema" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Elegí el tema claro, oscuro, o que siga al de Windows."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <!-- SelectedIndex se fija en code-behind ANTES de suscribir SelectionChanged
+                         (mismo criterio que los ToggleButton de abajo con Checked/Unchecked): así
+                         setear el valor inicial no dispara un guardado redundante. -->
+                    <ComboBox x:Name="ThemeCombo" Grid.Column="1" Width="120" VerticalAlignment="Center">
+                        <ComboBoxItem Content="Claro" Tag="Light"/>
+                        <ComboBoxItem Content="Oscuro" Tag="Dark"/>
+                        <ComboBoxItem Content="Sistema" Tag="System"/>
+                    </ComboBox>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== Transcripción ===== -->
+        <!-- F4: "Transcribir con"/"Calidad"/"Idioma" vivían como selectores sueltos en la barra
+             superior de MainWindow; se mudaron acá como defaults persistentes (se siguen leyendo
+             en vivo desde MainViewModel.Engine/GroqModel/Language al transcribir, ver
+             MainViewModel.TranscribeAsync). No están bindeados a MainViewModel directo (el
+             DataContext de esta ventana es SyncCoordinator.Instance, ver comentario de arriba):
+             igual criterio que "Apariencia"/ThemeCombo, ver SettingsWindow.xaml.cs. -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Transcripción" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+
+                <Grid Margin="0,0,0,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Transcribir con" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Local usa tu PC (sin conexión). Groq transcribe en la nube (más rápido)."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <ComboBox x:Name="EngineCombo" Grid.Column="1" Width="170" VerticalAlignment="Center"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="Groq (nube · rápido)" Tag="groq"/>
+                        <ComboBoxItem Content="Local (tu PC)" Tag="local"/>
+                    </ComboBox>
+                </Grid>
+
+                <!-- Calidad: solo aplica al motor nube (Groq). Visibility se maneja a mano en
+                     code-behind (UpdateQualityRowVisibility): sin DataContext de MainViewModel acá
+                     no hay un IsGroq bindeable directo, mismo motivo que el resto de la sección. -->
+                <Grid x:Name="QualityRow" Margin="0,0,0,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Calidad" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Solo aplica al motor en la nube (Groq)."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <ComboBox x:Name="QualityCombo" Grid.Column="1" Width="170" VerticalAlignment="Center"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="Rápida (turbo)" Tag="whisper-large-v3-turbo"/>
+                        <ComboBoxItem Content="Máxima (large-v3)" Tag="whisper-large-v3"/>
+                    </ComboBox>
+                </Grid>
+
+                <Grid Margin="0,0,0,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Idioma" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Español fuerza el idioma; Automático lo detecta solo."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <ComboBox x:Name="LanguageCombo" Grid.Column="1" Width="170" VerticalAlignment="Center"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="Español" Tag="es"/>
+                        <ComboBoxItem Content="Automático" Tag="auto"/>
+                    </ComboBox>
+                </Grid>
+
+                <!-- Traducir (2026-07-14): "Transcribir" | "Transcribir y traducir", mismo par que
+                     muestra la web en transcribe-workspace.tsx. Solo aplica al motor nube (Groq):
+                     el motor Local (Whisper en la PC) no traduce, mismo criterio que "Calidad"
+                     arriba (fila visible solo con Groq, ver ModoRow/UpdateGroqOnlyRowsVisibility).
+                     Se puso acá (Configuración → Transcripción) y no suelta en MainWindow para
+                     seguir el MISMO patrón que ya movió Motor/Calidad/Idioma fuera de la barra
+                     superior (ver comentario "F4" arriba de esta sección). -->
+                <Grid x:Name="ModoRow" Margin="0,0,0,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Modo" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Requiere el motor nube (Groq). Traduce el texto ya transcripto al idioma destino."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <ComboBox x:Name="ModoCombo" Grid.Column="1" Width="190" VerticalAlignment="Center"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="Transcribir" Tag="transcribe"/>
+                        <ComboBoxItem Content="Transcribir y traducir" Tag="translate"/>
+                    </ComboBox>
+                </Grid>
+
+                <Grid x:Name="TargetLanguageRow">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Idioma destino" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="A qué idioma traducir cuando el modo es &quot;Transcribir y traducir&quot;."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <ComboBox x:Name="TargetLanguageCombo" Grid.Column="1" Width="170" VerticalAlignment="Center"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="Español" Tag="es"/>
+                        <ComboBoxItem Content="Inglés" Tag="en"/>
+                        <ComboBoxItem Content="Portugués" Tag="pt"/>
+                        <ComboBoxItem Content="Francés" Tag="fr"/>
+                        <ComboBoxItem Content="Italiano" Tag="it"/>
+                        <ComboBoxItem Content="Alemán" Tag="de"/>
+                    </ComboBox>
+                </Grid>
+
+                <!-- Identificar quién habla (diarización, 2026-07-15): 100% local con sherpa-onnx
+                     (ver DiarizationService en Core). Solo funciona con el motor Local — la nube
+                     no la tiene — así que activarla fuerza el motor a Local y bloquea el selector
+                     de arriba (ver MainViewModel.OnUseDiarizationChanged y
+                     UpdateEngineRowEnabled más abajo en el code-behind). -->
+                <Grid Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Identificar quién habla (reuniones)" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"
+                                   Text="Marca cada tramo de la transcripción como 'Persona 1', 'Persona 2', etc. Solo funciona con el motor Local (en tu PC) y hace falta descargar unos modelos chicos (decenas de MB) una única vez."/>
+                    </StackPanel>
+                    <ToggleButton x:Name="UseDiarizationToggle" Grid.Column="1"
+                                  Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== Asistente IA ===== -->
+        <!-- Vocabulario y Formatos son ventanas propias (no caben como toggle/combo acá): gestión
+             completa del catálogo del usuario, a diferencia del detalle de una nota
+             (NoteDetailWindow), que solo LISTA y APLICA formatos a una transcripción puntual. -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Asistente IA" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Vocabulario" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Nombres, marcas o jerga que la transcripción corrige automáticamente."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="Gestionar" Style="{StaticResource SecondaryButton}"
+                            Click="OnOpenVocabularyClick"/>
+                </Grid>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Formatos" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Instrucciones reutilizables de IA para aplicar a tus notas."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="Gestionar" Style="{StaticResource SecondaryButton}"
+                            Click="OnOpenFormatosClick"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== Tu carpeta ===== -->
+        <!-- A.6/B.3 (DESIGN-REVIEW-2026-07-16.md): unificado a "tu carpeta" — antes esta ventana
+             la llamaba "Carpeta sincronizada" mientras MainWindow decía "Carpeta de trabajo" y el
+             picker de onboarding decía "workspace": cinco nombres para el mismo objeto en disco. -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Tu carpeta" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox Grid.Column="0" Style="{StaticResource InputBox}" IsReadOnly="True"
+                             Text="{Binding SyncFolder, Mode=OneWay, TargetNullValue='Sin configurar'}"
+                             Margin="0,0,10,0" VerticalAlignment="Center"/>
+                    <Button Grid.Column="1" Content="Cambiar carpeta" Style="{StaticResource SecondaryButton}"
+                            Click="OnChangeFolderClick"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== Google Drive ===== -->
+        <!-- El desktop NO maneja Drive directamente: Drive se configura desde la web. Este botón
+             solo abre esa pantalla en el navegador default (ver OnConfigureGoogleDriveClick). -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Google Drive" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0"
+                               TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextMuted}"
+                               Text="Google Drive se configura desde la web. Este botón te lleva ahí."/>
+                    <Button Grid.Column="1" Content="Configurar Google Drive" Style="{StaticResource SecondaryButton}"
+                            Click="OnConfigureGoogleDriveClick"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== Comportamiento ===== -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Comportamiento" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+
+                <Grid Margin="0,0,0,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Minimizar a la bandeja al cerrar" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="La [x] de la ventana oculta la app en vez de cerrarla. Salí desde el ícono de la bandeja."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <ToggleButton x:Name="MinimizeToTrayToggle" Grid.Column="1"
+                                  Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center"/>
+                </Grid>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Iniciar con Windows" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Abre Audio Transcriber (minimizado a la bandeja) al iniciar sesión en Windows."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <ToggleButton x:Name="AutoStartToggle" Grid.Column="1"
+                                  Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ===== Actualizaciones ===== -->
+        <!-- Jerarquía: cuando hay update lista, "Reiniciar y actualizar" es el botón PRIMARIO
+             destacado y "Buscar actualizaciones" queda como secundario discreto al lado (nunca dos
+             botones grandes del mismo peso). Sin update, solo se ve el secundario. El texto de
+             estado va en su propia línea, con ancho completo, para no quedar apretado contra los
+             botones (mismo criterio de spacing que "Comportamiento", arriba). -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Actualizaciones" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+
+                <TextBlock x:Name="CurrentVersionText" FontSize="12"
+                           Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4"/>
+
+                <!-- Mismo tono TextMuted para todos los estados (al día / hay update / error de red
+                     transitorio): es texto informativo, no una alerta — la jerarquía visual la da
+                     el botón primario cuando corresponde, no el color del texto. -->
+                <TextBlock x:Name="UpdateStatusText" TextWrapping="Wrap" FontSize="12"
+                           Foreground="{DynamicResource TextMuted}" Margin="0,0,0,12"/>
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="CheckUpdatesButton" Content="Buscar actualizaciones"
+                            Style="{StaticResource SecondaryButton}" Margin="0,0,8,0"
+                            Click="OnCheckUpdatesClick"/>
+                    <Button x:Name="RestartNowButton" Content="Reiniciar y actualizar"
+                            Style="{StaticResource PrimaryButton}"
+                            Visibility="Collapsed" Click="OnRestartNowClick"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <Button Content="Cerrar" Style="{StaticResource PrimaryButton}"
+                HorizontalAlignment="Right" Click="OnCloseClick"/>
+
+    </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Window>

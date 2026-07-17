@@ -1,0 +1,40 @@
+<Window x:Class="AudioTranscriber.App.RecipeEditDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        SizeToContent="Height" Width="440" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource Surface}" FontFamily="Segoe UI" FontSize="14"
+        Foreground="{DynamicResource TextPrimary}" Title="Audio Transcriber">
+    <!-- Diálogo de dos campos (nombre + instrucción) para crear/editar un Formato: InputDialog
+         solo tiene un campo, por eso este es un diálogo propio (mismo criterio visual: SizeToContent,
+         ShowInTaskbar=False, botones Cancelar/Aceptar). -->
+    <StackPanel Margin="20">
+        <TextBlock x:Name="HeaderText" Style="{StaticResource SubtitleText}" Margin="0,0,0,12"/>
+
+        <TextBlock Text="Nombre" Style="{StaticResource SectionLabel}" Margin="2,0,0,4"/>
+        <TextBox x:Name="NameBox" Style="{StaticResource InputBox}" Padding="8,7" Margin="0,0,0,12"/>
+
+        <TextBlock Text="Instrucción" Style="{StaticResource SectionLabel}" Margin="2,0,0,4"/>
+        <TextBlock Text="Qué querés que la IA haga con la nota (ej. &quot;Armá un acta con decisiones y próximos pasos&quot;)."
+                   Style="{StaticResource CaptionText}" Margin="2,0,0,6"/>
+        <!-- Foreground explícito: sin esto el texto queda oscuro sobre fondo oscuro en tema Dark
+             (ver comentario del mismo bug en NoteDetailWindow.xaml). -->
+        <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="7"
+                BorderBrush="{DynamicResource Border}" BorderThickness="1" Height="140">
+            <TextBox x:Name="InstructionBox" TextWrapping="Wrap" AcceptsReturn="True"
+                     VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                     Background="Transparent" Foreground="{DynamicResource TextPrimary}"
+                     CaretBrush="{DynamicResource TextPrimary}" Padding="10" FontSize="13"/>
+        </Border>
+
+        <TextBlock x:Name="ErrorText" Foreground="{DynamicResource Danger}" TextWrapping="Wrap"
+                   FontSize="12" Margin="0,10,0,0" Visibility="Collapsed"/>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Cancelar" Style="{StaticResource SecondaryButton}"
+                    Margin="0,0,8,0" IsCancel="True"/>
+            <Button Content="Guardar" Style="{StaticResource PrimaryButton}"
+                    IsDefault="True" Click="OnSave"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

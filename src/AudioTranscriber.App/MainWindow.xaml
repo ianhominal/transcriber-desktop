@@ -1,0 +1,1062 @@
+<Window x:Class="AudioTranscriber.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:AudioTranscriber.App.ViewModels"
+        xmlns:controls="clr-namespace:AudioTranscriber.App.Controls"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Audio Transcriber" Height="760" Width="1060"
+        MinHeight="600" MinWidth="880"
+        Background="{DynamicResource Bg}"
+        FontFamily="Segoe UI" FontSize="14"
+        Foreground="{DynamicResource TextPrimary}"
+        AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop"
+        StateChanged="OnMainWindowStateChanged">
+
+    <!-- Custom title bar (see Controls/TitleBar.xaml): WindowChrome hides the native Windows
+         caption (which paints itself in the system accent color — a brown/gold that clashed with
+         the app's palette) and hands that strip to our own themed TitleBar control instead.
+         WindowStyle is intentionally left at its default (SingleBorderWindow), NOT set to "None":
+         WindowChrome alone already removes the native title bar visuals while keeping DWM's resize
+         border, drop shadow, and Aero Snap working, which WindowStyle="None" would otherwise cost
+         extra workarounds to get back. CaptionHeight (36) must match TitleBar's Height exactly —
+         that's the strip WindowChrome treats as a draggable caption (drag-to-move,
+         double-click-to-maximize) for anything inside it that isn't explicitly marked
+         shell:WindowChrome.IsHitTestVisibleInChrome="True" (only TitleBar's three buttons are). -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="36"
+                             ResizeBorderThickness="6"
+                             GlassFrameThickness="0"
+                             CornerRadius="0"
+                             UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Window.DataContext>
+        <vm:MainViewModel/>
+    </Window.DataContext>
+
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo ProgressState="{Binding TaskbarState}"
+                         ProgressValue="{Binding TaskbarProgress}"/>
+    </Window.TaskbarItemInfo>
+
+    <!-- RootGrid: Row 0 is the custom title bar (edge-to-edge, no margin); Row 1 is the original
+         content, unchanged except for moving one level deeper. x:Name is used from code-behind
+         (OnMainWindowStateChanged) to add the "maximize compensation" margin — the classic
+         WindowChrome + WindowState.Maximized bug where the maximized window paints a few pixels
+         past the visible work area (covering the taskbar edge) unless compensated. -->
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <controls:TitleBar Grid.Row="0" TitleText="Audio Transcriber"/>
+
+        <Grid Grid.Row="1" Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ===================== Banner: actualización lista ===================== -->
+        <!-- Aparece/desaparece por binding (Visibility por bool), nunca manipulado desde
+             code-behind: ver MainViewModel.IsUpdateReady, que se pone en true cuando
+             UpdateService.UpdateReady se dispara (chequeo automático al abrir o manual desde
+             SettingsWindow). El botón llama a ApplyUpdateCommand -> UpdateService.ApplyAndRestart. -->
+        <Border Grid.Row="0" Style="{StaticResource Card}" Background="{DynamicResource AccentSoft}"
+                Padding="14,10" Margin="0,0,0,12"
+                Visibility="{Binding IsUpdateReady, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding UpdateBannerText}" VerticalAlignment="Center"
+                           FontWeight="SemiBold" Foreground="{DynamicResource AccentText}"/>
+                <Button Grid.Column="1" Content="Reiniciar y actualizar" Style="{StaticResource PrimaryButton}"
+                        Command="{Binding ApplyUpdateCommand}"/>
+            </Grid>
+        </Border>
+
+        <!-- ===================== Card: Resurfacing (2026-07-14) ===================== -->
+        <!-- "Mantener vivo el archivo": sugiere una nota vieja ya sincronizada localmente, 100%
+             calculado en el cliente (ver MainViewModel.ComputeResurfaceCandidate,
+             ResurfaceCandidatePicker), sin endpoint nuevo, paridad con el resurfacing client-side
+             de la web. Descartable: DismissResurfaceCommand persiste el descarte en AppSettings
+             (no vuelve a aparecer). -->
+        <Border Grid.Row="1" Style="{StaticResource Card}" Background="{DynamicResource SurfaceAlt}"
+                Padding="14,10" Margin="0,0,0,12"
+                Visibility="{Binding ShowResurfaceCard, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource TextSecondary}">
+                    <Run Text="{Binding ResurfaceText, Mode=OneWay}"/>
+                    <Run Text=":"/>
+                    <Run Text="{Binding ResurfaceAudio.FileName, Mode=OneWay}" FontWeight="SemiBold"
+                         Foreground="{DynamicResource TextPrimary}"/>
+                </TextBlock>
+                <Button Grid.Column="1" Content="Abrir" Style="{StaticResource SecondaryButton}"
+                        Margin="8,0,0,0" Command="{Binding OpenResurfaceCommand}"/>
+                <Button Grid.Column="2" ToolTip="Descartar" Style="{StaticResource IconButton}"
+                        Margin="6,0,0,0" AutomationProperties.Name="Descartar sugerencia"
+                        Command="{Binding DismissResurfaceCommand}">
+                    <Path Data="{StaticResource Icon.Close}" Style="{StaticResource IconGlyph}"/>
+                </Button>
+            </Grid>
+        </Border>
+
+        <!-- ===================== Header ===================== -->
+        <Border Grid.Row="2" Style="{StaticResource Card}" Padding="20,16">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- "Peacock" (F4): franja de acento con el color del proyecto seleccionado,
+                         al lado del título: "sentido de lugar" al entrar a un proyecto con
+                         color (mismo converter/paleta que el punto+borde del árbol de Proyectos,
+                         ver ProjectColorToBrush). Transparente cuando no hay proyecto seleccionado
+                         o no tiene color: el header queda neutro, igual que antes. SIEMPRE
+                         decorativo, nunca detrás de texto, así que va aparte, no como
+                         Background/BorderBrush de la tarjeta entera. -->
+                    <Border Width="5" CornerRadius="3" Margin="0,1,14,1" VerticalAlignment="Stretch"
+                            Background="{Binding SelectedProject.Color, Converter={StaticResource ProjectColorToBrush}}"/>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Audio Transcriber" Style="{StaticResource AppTitleText}"/>
+                        <TextBlock Text="{Binding WorkspacePath, TargetNullValue='Todavía no elegiste tu carpeta'}"
+                                   Foreground="{DynamicResource TextMuted}" FontSize="12" Margin="0,3,0,0"
+                                   TextTrimming="CharacterEllipsis"/>
+
+                        <!-- Indicador de estado de sincronización: punto de color + spinner mientras
+                             sincroniza + texto. Todo bindeado a SyncCoordinator (Sync), sin lógica
+                             nueva: solo se traduce el estado que ya expone el ViewModel a color/ícono. -->
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0" VerticalAlignment="Center">
+                            <controls:Spinner Width="11" Height="11" Margin="0,0,6,0"
+                                     Visibility="{Binding Sync.IsBusy, Converter={StaticResource BoolToVisibility}}"/>
+                            <Ellipse Margin="0,0,6,0"
+                                     Visibility="{Binding Sync.IsBusy, Converter={StaticResource InverseBoolToVisibility}}">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse" BasedOn="{StaticResource StatusDot}">
+                                        <Setter Property="Fill" Value="{DynamicResource Success}"/>
+                                        <Style.Triggers>
+                                            <!-- Contra el ESTADO (IsUnconfigured), no contra el texto visible.
+                                                 Antes esto matcheaba el literal "Sin configurar" de
+                                                 DisplayStatus: era el único de los cuatro triggers que miraba
+                                                 copy en vez de un bool, y el Setter default de este Style es
+                                                 VERDE. Mejorar ese texto — que hace falta — dejaba el trigger
+                                                 sin matchear y el punto se ponía verde de "sincronizado" con la
+                                                 carpeta sin configurar. Va PRIMERO a propósito: en WPF gana el
+                                                 último trigger que matchea, así que login/error lo pisan. -->
+                                            <DataTrigger Binding="{Binding Sync.IsUnconfigured}" Value="True">
+                                                <Setter Property="Fill" Value="{DynamicResource TextMuted}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Sync.NeedsLogin}" Value="True">
+                                                <Setter Property="Fill" Value="{DynamicResource Warning}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Sync.HasError}" Value="True">
+                                                <Setter Property="Fill" Value="{DynamicResource Danger}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <TextBlock Text="{Binding Sync.DisplayStatus}" FontSize="11" FontWeight="SemiBold"
+                                       VerticalAlignment="Center"
+                                       AutomationProperties.Name="{Binding Sync.DisplayStatus, StringFormat='Estado de sincronización: {0}'}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Sync.HasError}" Value="True">
+                                                <Setter Property="Foreground" Value="{DynamicResource Danger}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Sync.IsBusy}" Value="True">
+                                                <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- F4: "Transcribir con"/"Calidad"/"Idioma" se mudaron a Configuración (SettingsWindow,
+                     sección "Transcripción") como defaults persistentes: acá solo quedan los accesos
+                     de uso frecuente. MainViewModel.Engine/GroqModel/Language siguen existiendo tal
+                     cual (Transcribe() los sigue leyendo en vivo), solo cambió DÓNDE se eligen. -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Búsqueda de texto completo sobre TODAS las notas (2026-07-14, ver
+                         MainViewModel.SearchCommand/AiSearchClient). Enter dispara la búsqueda;
+                         resultados en el panel de la derecha, ver ShowSearchResults más abajo. -->
+                    <TextBox x:Name="SearchBox" Style="{StaticResource InputBox}" Width="200" Height="34"
+                             VerticalContentAlignment="Center"
+                             Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.Name="Buscar en tus notas">
+                        <TextBox.InputBindings>
+                            <KeyBinding Key="Return" Command="{Binding SearchCommand}"/>
+                        </TextBox.InputBindings>
+                    </TextBox>
+                    <Button ToolTip="Buscar en tus notas" Style="{StaticResource IconButton}"
+                            Margin="4,0,0,0" AutomationProperties.Name="Buscar"
+                            Command="{Binding SearchCommand}">
+                        <Path Data="{StaticResource Icon.Search}" Style="{StaticResource IconGlyph}"/>
+                    </Button>
+                    <Button Content="Chat con IA" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Command="{Binding OpenBrainWindowCommand}"
+                            ToolTip="Preguntale a la IA sobre todas tus notas."/>
+                    <!-- A.6 (DESIGN-REVIEW-2026-07-16.md): este botón re-apunta workspace y destino
+                         de sync a la vez al aceptar el picker — es la acción más destructiva del
+                         header, antes disfrazada de sustantivo pelado ("Carpeta de trabajo"), sin
+                         distinguirse de "Sincronización"/"Configuración" (que solo abren ventanas
+                         sin consecuencias). Verbo + elipsis, la convención de Windows para una
+                         acción que abre un diálogo del SO. Alinea con Configuración, que ya lo
+                         llama "Cambiar carpeta" (SettingsWindow.xaml). No toca OpenWorkspaceCommand:
+                         sigue siendo el único selector de carpeta de toda la app. -->
+                    <Button Content="Cambiar carpeta…" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Command="{Binding OpenWorkspaceCommand}"/>
+                    <Button Content="Sincronización" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Command="{Binding OpenSyncWindowCommand}"/>
+                    <Button Content="Configuración" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Command="{Binding OpenSettingsCommand}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ===================== Contenido ===================== -->
+        <Grid Grid.Row="3" Margin="0,18,0,18">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="330"/>
+                <ColumnDefinition Width="18"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Panel: Proyectos (explorador) -->
+            <Border Grid.Column="0" Style="{StaticResource Card}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <!-- MinHeight: el árbol nunca puede quedar en 0 aunque el stack de
+                             acciones de la Row 3 pida más espacio del disponible — antes, con la
+                             Row 3 en Auto, el stack se llevaba todo el alto que quisiera y esta
+                             fila colapsaba a 0 (ver A.2, DESIGN-REVIEW-2026-07-16.md). -->
+                        <RowDefinition Height="*" MinHeight="120"/>
+                        <!-- Antes era Auto: una fila Auto se mide con alto infinito, así que el
+                             ScrollViewer de abajo nunca llegaba a acotarse y jamás mostraba barra
+                             (gotcha conocido de Grid en WPF). Con "*" comparte el espacio sobrante
+                             con la Row 2 y el ScrollViewer sí queda acotado y puede scrollear. -->
+                        <RowDefinition Height="*"/>
+                        <!-- "Transcribir" en su propia fila fija, fuera del área con scroll: la
+                             acción primaria del producto no puede depender de que el usuario
+                             scrollee para encontrarla. -->
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Encabezado + acciones del explorador -->
+                    <Grid Grid.Row="0" Margin="0,0,0,10">
+                        <TextBlock Text="Proyectos" Style="{StaticResource HeadingText}" VerticalAlignment="Center"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button ToolTip="Nuevo proyecto" Style="{StaticResource IconButton}"
+                                    AutomationProperties.Name="Nuevo proyecto"
+                                    Command="{Binding NewProjectCommand}">
+                                <Path Data="{StaticResource Icon.Plus}" Style="{StaticResource IconGlyph}"/>
+                            </Button>
+                            <Button ToolTip="Editar" Style="{StaticResource IconButton}"
+                                    AutomationProperties.Name="Editar el proyecto o renombrar el audio seleccionado"
+                                    Command="{Binding RenameSelectedCommand}">
+                                <Path Data="{StaticResource Icon.Pencil}" Style="{StaticResource IconGlyph}"/>
+                            </Button>
+                            <Button ToolTip="Borrar" Style="{StaticResource IconButtonDanger}"
+                                    AutomationProperties.Name="Borrar proyecto o audio seleccionado"
+                                    Command="{Binding DeleteSelectedCommand}">
+                                <Path Data="{StaticResource Icon.Trash}" Style="{StaticResource IconGlyph}"/>
+                            </Button>
+                            <Button ToolTip="Actualizar" Style="{StaticResource IconButton}"
+                                    AutomationProperties.Name="Actualizar lista de audios"
+                                    Command="{Binding RefreshAudiosCommand}">
+                                <Path Data="{StaticResource Icon.Refresh}" Style="{StaticResource IconGlyph}"/>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Margin="2,0,8,0" FontSize="11" VerticalAlignment="Center"
+                                   TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}"
+                                   Text="Arrastrá un audio a otro proyecto para moverlo."/>
+                        <!-- "Unir notas" (modo explícito, rediseño 2026-07-14): entra al modo unir
+                             (prende MainViewModel.IsMergeModeActive), que hace aparecer los checkboxes
+                             de cada audio y la barra de instrucciones de abajo. Se oculta mientras el
+                             modo ya está activo: "Cancelar" en esa barra es la única salida, para no
+                             tener dos botones haciendo lo mismo. Sin emoji: texto limpio, consistente
+                             con el resto de los botones tocados en este rediseño. -->
+                        <Button Grid.Column="1" Content="Unir notas" Style="{StaticResource SecondaryButton}"
+                                Padding="10,4" FontSize="11" VerticalAlignment="Center"
+                                Command="{Binding ToggleMergeModeCommand}"
+                                ToolTip="Elegir varias notas para combinarlas en un documento"
+                                Visibility="{Binding IsMergeModeActive, Converter={StaticResource InverseBoolToVisibility}}"/>
+                    </Grid>
+
+                    <!-- Árbol de proyectos y audios -->
+                    <Grid Grid.Row="2">
+                        <!-- Empty state: sin proyectos todavía. Puramente visual (CountToVisibility),
+                             no toca el ViewModel. Bindeado a "Projects.Count" (NO a "Projects"
+                             directo): Projects es ObservableCollection get-only poblada con
+                             Clear()/Add(), así que solo "Count" dispara PropertyChanged y
+                             refresca la Visibility cuando cambia la cantidad de proyectos. -->
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    IsHitTestVisible="False" MaxWidth="220"
+                                    Visibility="{Binding Projects.Count, Converter={StaticResource CountToVisibility}}">
+                            <TextBlock Text="Todavía no hay proyectos" HorizontalAlignment="Center"
+                                       FontWeight="SemiBold" FontSize="13" Margin="0,8,0,0"
+                                       Foreground="{DynamicResource TextSecondary}"/>
+                            <TextBlock Text="Creá uno con ＋ o arrastrá un audio para empezar."
+                                       TextAlignment="Center" TextWrapping="Wrap" Margin="0,4,0,0"
+                                       FontSize="11" Foreground="{DynamicResource TextMuted}"/>
+                        </StackPanel>
+
+                    <TreeView x:Name="ProjectTree" ItemsSource="{Binding Projects}"
+                              BorderThickness="0" Background="Transparent"
+                              Foreground="{DynamicResource TextPrimary}"
+                              MinHeight="120"
+                              SelectedItemChanged="OnTreeSelectionChanged"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <TreeView.ItemContainerStyle>
+                            <Style TargetType="TreeViewItem" BasedOn="{StaticResource TreeViewItemFlat}">
+                                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                                <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+                            </Style>
+                        </TreeView.ItemContainerStyle>
+                        <TreeView.Resources>
+                            <!-- Proyecto -->
+                            <HierarchicalDataTemplate DataType="{x:Type vm:ProjectVm}" ItemsSource="{Binding Audios}">
+                                <!-- "Color por proyecto" (F2, estilo VS Code Peacock/Google Drive):
+                                     el color es SIEMPRE decorativo, nunca un fondo detrás del
+                                     texto: solo un borde izquierdo de acento (3px, ver
+                                     BorderThickness) y un punto chico antes del nombre (ver
+                                     Ellipse abajo). Ambos resuelven Color (id string o null) a
+                                     Brush vía ProjectColorToBrush (Transparent para "sin color" o
+                                     id inválido, nunca tira). El grosor del borde queda reservado
+                                     siempre (aunque sea transparente) para que la indentación del
+                                     ícono/nombre no salte entre proyectos con y sin color. -->
+                                <Border Background="Transparent" AllowDrop="True"
+                                        DragOver="OnProjectDragOver" Drop="OnProjectDrop"
+                                        Padding="2,3" BorderThickness="3,0,0,0"
+                                        BorderBrush="{Binding Color, Converter={StaticResource ProjectColorToBrush}}"
+                                        ToolTip="{Binding Description}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Ellipse Width="8" Height="8" Margin="0,0,6,0"
+                                                 VerticalAlignment="Center"
+                                                 Fill="{Binding Color, Converter={StaticResource ProjectColorToBrush}}"/>
+                                        <!-- Sin ícono de carpeta (pedido del dueño: sin emoji en el
+                                             chrome, 2026-07-14): el Ellipse de color arriba ya
+                                             marca visualmente cada proyecto. -->
+                                        <TextBlock Text="{Binding Header}" FontWeight="SemiBold"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextPrimary}"/>
+                                    </StackPanel>
+                                </Border>
+                            </HierarchicalDataTemplate>
+                            <!-- Audio -->
+                            <DataTemplate DataType="{x:Type vm:AudioItemVm}">
+                                <Border Background="Transparent" Padding="2,3"
+                                        PreviewMouseMove="OnAudioMouseMove">
+                                    <StackPanel Orientation="Horizontal">
+                                        <!-- "Unir notas" (modo explícito, rediseño 2026-07-14): el
+                                             checkbox SOLO aparece mientras MainViewModel.IsMergeModeActive
+                                             está prendido (botón "Unir notas" del header, ver más abajo):
+                                             por defecto la lista queda limpia, sin checkboxes. Marca
+                                             este audio para unirlo con otros (ver
+                                             MainViewModel.MergeSelectedCommand). Solo notas ya
+                                             sincronizadas se pueden unir (el backend opera sobre ids
+                                             remotos, ver AudioItemVm.IsSyncedRemotely). -->
+                                        <CheckBox VerticalAlignment="Center" Margin="0,0,4,0"
+                                                  IsChecked="{Binding IsMarkedForMerge, Mode=TwoWay}"
+                                                  IsEnabled="{Binding IsSyncedRemotely}"
+                                                  Visibility="{Binding DataContext.IsMergeModeActive, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}"
+                                                  ToolTip="Elegir para unir con otras notas (necesita estar sincronizada)"
+                                                  AutomationProperties.Name="Elegir para unir"/>
+                                        <TextBlock Text="{Binding StatusGlyph}" Width="18" FontSize="12"
+                                                   VerticalAlignment="Center">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <!-- Was a hardcoded "#B4B8C1" that never adapted to the
+                                                         theme (looked fine in light, unreadably flat in dark).
+                                                         TextMuted is the correct semantic brush for "no
+                                                         status yet" and repaints with ThemeManager like
+                                                         everything else. -->
+                                                    <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding HasTranscript}" Value="True">
+                                                            <Setter Property="Foreground" Value="{DynamicResource Success}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <StackPanel>
+                                            <!-- FileName is the PRIMARY content of this row (the project
+                                                 header above already gets an explicit TextPrimary too, same
+                                                 fix): explicit TextPrimary instead of relying on inherited
+                                                 Foreground, which silently resolved to WPF's default
+                                                 TreeView theme color (not the app's palette) and read as
+                                                 dim gray in dark mode. SizeText stays TextMuted on purpose
+                                                 (secondary metadata, still readable — see Colors.Dark.xaml's
+                                                 contrast notes). -->
+                                            <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
+                                                       Foreground="{DynamicResource TextPrimary}"/>
+                                            <TextBlock Text="{Binding SizeText}" FontSize="11"
+                                                       Foreground="{DynamicResource TextMuted}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </TreeView.Resources>
+                    </TreeView>
+                    </Grid>
+
+                    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="0,12,0,0">
+                        <!-- "Unir notas" (modo explícito, rediseño 2026-07-14): esta barra es TODO el
+                             modo unir mientras está activo (ver MainViewModel.IsMergeModeActive):
+                             instrucción explícita de qué hacer, cuántas notas hay elegidas hasta ahora,
+                             y las dos únicas acciones (confirmar o salir). Ya no depende de
+                             MarkedForMergeCount para mostrarse: aparece apenas se entra al modo (botón
+                             "Unir notas" de arriba), incluso con 0 elegidas todavía, así el usuario ve
+                             la instrucción ANTES de tocar el primer checkbox. "Unir (N)" queda
+                             deshabilitado hasta el mínimo de 2 (ver
+                             AiMergeClient.MinNoteCount/CanMergeNoteCount, vía CanMergeSelected). -->
+                        <Border Background="{DynamicResource AccentSoft}" CornerRadius="8" Padding="10,8" Margin="0,0,0,10"
+                                Visibility="{Binding IsMergeModeActive, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel>
+                                <TextBlock HorizontalAlignment="Center" FontSize="11" TextWrapping="Wrap"
+                                           TextAlignment="Center" Foreground="{DynamicResource AccentText}"
+                                           Text="Elegí 2 o más notas para combinar en un documento"/>
+                                <TextBlock HorizontalAlignment="Center" FontSize="12" FontWeight="SemiBold"
+                                           Margin="0,4,0,0" Foreground="{DynamicResource AccentText}"
+                                           Text="{Binding MarkedForMergeCount, StringFormat='{}{0} nota(s) elegida(s)'}"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                                    <Button Content="{Binding MarkedForMergeCount, StringFormat='Unir ({0})'}"
+                                            Style="{StaticResource PrimaryButton}"
+                                            Padding="12,6" FontSize="12" Margin="0,0,6,0"
+                                            Command="{Binding MergeSelectedCommand}"/>
+                                    <Button Content="Cancelar" Style="{StaticResource SecondaryButton}"
+                                            Padding="12,6" FontSize="12" Command="{Binding ClearMergeSelectionCommand}"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Destino explícito (rediseño 2026-07-14, paridad con "Proyecto destino"
+                             de la web): a qué proyecto van a caer los audios que agregues, grabes o
+                             transcribas a continuación — mismo proyecto que ya resolvían
+                             AddDroppedFiles/StartRecording de forma implícita según el nodo
+                             enfocado en el árbol, ahora VISIBLE arriba de las acciones, en su propio
+                             chip (antes era un TextBlock chico y suelto, fácil de no notar/confiar;
+                             ver MainViewModel.AddDestinationLabel para el detalle de la investigación
+                             del reporte "Va a: New test"). Sin emoji (pedido del dueño): borde de
+                             acento a la izquierda en vez de ícono, mismo lenguaje visual que la franja
+                             "Peacock" del header. -->
+                        <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="8" Padding="10,7" Margin="0,0,0,10"
+                                BorderBrush="{DynamicResource Accent}" BorderThickness="3,0,0,0">
+                            <TextBlock Text="{Binding AddDestinationLabel}" FontSize="12" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{DynamicResource TextPrimary}"/>
+                        </Border>
+
+                        <!-- Paso 1: cargar audio (archivo o grabación) -->
+                        <Border Background="{DynamicResource AccentSoft}" CornerRadius="8" Padding="10,8" Margin="0,0,0,6">
+                            <TextBlock HorizontalAlignment="Center" FontSize="12" TextAlignment="Center"
+                                       Foreground="{DynamicResource AccentText}"
+                                       Text="Arrastrá audios aquí"/>
+                        </Border>
+                        <Button Content="Cargar archivo(s)" Style="{StaticResource SecondaryButton}" Margin="0,0,0,10"
+                                Command="{Binding AddFilesCommand}"
+                                ToolTip="Elegí uno o más audios desde el Explorador (alternativa a arrastrarlos)."/>
+
+                        <!-- Indicador de grabación: cronómetro + VU meter, solo mientras graba -->
+                        <Grid Margin="0,0,0,10" Visibility="{Binding IsRecording, Converter={StaticResource BoolToVisibility}}">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <StackPanel Grid.Row="0" Orientation="Horizontal">
+                                <Ellipse Width="10" Height="10" Fill="{DynamicResource Danger}" VerticalAlignment="Center"/>
+                                <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontFamily="{StaticResource AppFontMono}"
+                                           FontWeight="SemiBold" Text="{Binding RecordingElapsedText}"/>
+                            </StackPanel>
+                            <ProgressBar Grid.Row="1" Margin="0,6,0,0" Height="6" Minimum="0" Maximum="1"
+                                         Value="{Binding RecordingLevel, Mode=OneWay}"
+                                         Foreground="{DynamicResource Danger}" Background="{DynamicResource SurfaceAlt}"
+                                         BorderThickness="0"/>
+                        </Grid>
+
+                        <!-- Labels que se oponen sin necesitar hover (A.5, DESIGN-REVIEW-2026-07-16.md):
+                             antes los dos botones decían "Grabar audio"/"Grabar reunión" y lo único
+                             que distinguía "graba solo tu voz" de "graba también lo que suena en tu
+                             computadora" vivía en el tooltip — apretar el que no correspondía en una
+                             reunión de Meet dejaba un archivo con solo tu voz, sin forma de repetirla. -->
+                        <Button Content="Grabar solo mi voz" Style="{StaticResource SecondaryButton}" Margin="0,0,0,10"
+                                Command="{Binding ToggleRecordingCommand}"
+                                Visibility="{Binding IsRecording, Converter={StaticResource InverseBoolToVisibility}}"
+                                ToolTip="Graba solo tu micrófono."
+                                AutomationProperties.Name="Grabar solo tu voz, sin el audio de la reunión"/>
+                        <!-- "Grabar reunión" — graba el audio de la reunión (lo que suena en tu
+                             computadora: los demás participantes de un Meet/Zoom) JUNTO con tu
+                             micrófono, en un solo archivo. Sin esto, una reunión grabada desde acá
+                             quedaba a medias (solo tu voz).
+
+                             El selector de abajo elige DE QUÉ APLICACIÓN tomar ese audio (por
+                             ejemplo, solo el navegador con el Meet, sin Spotify ni notificaciones
+                             de Windows sonando al mismo tiempo) — "Todo el audio de la computadora"
+                             es el default, el comportamiento de siempre, para no romper a quien ya
+                             usaba este botón. Se refresca recién al abrirlo (ver
+                             MainWindow.xaml.cs, OnMeetingAudioSourceDropDownOpened) porque las
+                             aplicaciones que suenan cambian todo el tiempo. Si la aplicación
+                             elegida no se puede grabar sola, MeetingRecorder cae sola a todo el
+                             audio de la computadora y StatusMessage lo avisa (ver
+                             MainViewModel.OnAppAudioUnavailable) — la grabación nunca se pierde. -->
+                        <ComboBox Margin="0,0,0,6" FontSize="12"
+                                  ItemsSource="{Binding MeetingAudioSourceOptions}"
+                                  SelectedItem="{Binding SelectedMeetingAudioSource}"
+                                  DisplayMemberPath="Label"
+                                  DropDownOpened="OnMeetingAudioSourceDropDownOpened"
+                                  Visibility="{Binding IsRecording, Converter={StaticResource InverseBoolToVisibility}}"
+                                  ToolTip="De qué aplicación grabar el audio de la reunión (Meet, Zoom...) — por defecto, todo lo que suena en tu computadora."
+                                  AutomationProperties.Name="Aplicación a grabar en la reunión"/>
+                        <Button Content="Grabar reunión (todos)" Style="{StaticResource SecondaryButton}" Margin="0,0,0,6"
+                                Command="{Binding ToggleMeetingRecordingCommand}"
+                                Visibility="{Binding IsRecording, Converter={StaticResource InverseBoolToVisibility}}"
+                                ToolTip="Graba el audio de la reunión (lo que suena en tu computadora) junto con tu micrófono, todo en un solo archivo — pensado para reuniones de Meet o Zoom."/>
+                        <!-- "Identificar quién habla" (A.11, DESIGN-REVIEW-2026-07-16.md): antes esta
+                             opción solo vivía en Configuración, sin ninguna mención en el flujo de
+                             "Grabar reunión" — justo el caso que le da sentido (saber quién dijo qué
+                             en una llamada con varias personas). Bindeado directo a
+                             MainViewModel.UseDiarization, la MISMA propiedad que usa Configuración
+                             (no un default de sesión aparte): el setter ya persiste el valor y fuerza
+                             el motor a Local mientras esté activo (ver OnUseDiarizationChanged), así
+                             que acá no hace falta plomería nueva. Default false a propósito: activarlo
+                             fuerza Engine="local" y lo persiste, migrando en silencio a un usuario que
+                             venía usando Groq. -->
+                        <CheckBox Content="Identificar quién habla" Margin="0,0,0,10" FontSize="12"
+                                  IsChecked="{Binding UseDiarization}"
+                                  Foreground="{DynamicResource TextSecondary}"
+                                  Visibility="{Binding IsRecording, Converter={StaticResource InverseBoolToVisibility}}"
+                                  ToolTip="Separa el texto por persona ('Persona 1:'/'Persona 2:'…). Solo funciona con el motor Local: activarlo lo fija en Local."
+                                  AutomationProperties.Name="Identificar quién habla en la reunión"/>
+                        <Button Content="Detener grabación" Style="{StaticResource PrimaryButton}" Margin="0,0,0,10"
+                                Command="{Binding ToggleRecordingCommand}"
+                                Visibility="{Binding ShowStopMicButton, Converter={StaticResource BoolToVisibility}}"/>
+                        <Button Content="Detener grabación" Style="{StaticResource PrimaryButton}" Margin="0,0,0,10"
+                                Command="{Binding ToggleMeetingRecordingCommand}"
+                                Visibility="{Binding ShowStopMeetingButton, Converter={StaticResource BoolToVisibility}}"/>
+
+                        <!-- Paso 2: motor + estado del modelo local (bugfix 2026-07-14: separado
+                             de grabar/transcribir — ver MainViewModel, región "Descarga del
+                             modelo local", para el diagnóstico completo). Antes el motor solo se
+                             elegía en Configuración, invisible desde acá; ahora queda a la vista
+                             justo donde importa: al lado del botón que lo usa. -->
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Motor:" FontSize="11" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextMuted}" Margin="0,0,6,0"/>
+                            <!-- IsEngineSelectable: false mientras "Identificar quién habla" está
+                                 activo (Configuración) — la nube no identifica hablantes, así que
+                                 el motor queda fijo en Local y el selector se bloquea acá, con un
+                                 tooltip que explica por qué (ShowOnDisabled, mismo patrón que el
+                                 botón Transcribir/TranscribeDisabledReason más abajo). -->
+                            <ComboBox Grid.Column="1" FontSize="12" SelectedValuePath="Tag"
+                                      SelectedValue="{Binding Engine}"
+                                      IsEnabled="{Binding IsEngineSelectable}"
+                                      ToolTipService.ShowOnDisabled="True"
+                                      ToolTip="{Binding EngineLockedReason}"
+                                      AutomationProperties.Name="Motor de transcripción">
+                                <ComboBoxItem Content="Local (tu PC, sin conexión)" Tag="local"/>
+                                <ComboBoxItem Content="Groq (nube, más rápido)" Tag="groq"/>
+                            </ComboBox>
+                        </Grid>
+
+                        <!-- Calidad del modelo Local (2026-07-15) — SOLO visible con ese motor: la
+                             nube tiene su propio selector de calidad (GroqModel, en Configuración).
+                             Antes el motor Local usaba siempre el modelo más chico de Whisper, sin
+                             forma de elegir otro; ver LocalModelOptions (Core) para el catálogo y
+                             MainViewModel.OnLocalModelIdChanged para qué pasa al cambiarlo.
+                             Deshabilitado mientras IsBusy: cambiarlo en medio de una transcripción
+                             soltaría el modelo que ese trabajo todavía está usando en otro hilo. -->
+                        <Grid Margin="0,0,0,6" Visibility="{Binding IsGroq, Converter={StaticResource InverseBoolToVisibility}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Modelo:" FontSize="11" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextMuted}" Margin="0,0,6,0"/>
+                            <ComboBox Grid.Column="1" FontSize="12" SelectedValuePath="Tag"
+                                      SelectedValue="{Binding LocalModelId}"
+                                      IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolean}}"
+                                      ToolTip="Un modelo más grande transcribe mejor el español, pero tarda más y pesa más para descargar."
+                                      AutomationProperties.Name="Modelo local de Whisper">
+                                <ComboBoxItem Content="Rápido (167 MB)" Tag="small"/>
+                                <ComboBoxItem Content="Bueno (514 MB)" Tag="medium"/>
+                                <ComboBoxItem Content="El mejor (1 GB)" Tag="large-v3"/>
+                            </ComboBox>
+                        </Grid>
+
+                        <!-- Aviso + botón de descarga: SOLO visible con motor Local y modelo
+                             faltante (ShowDownloadModelBanner) — nunca se mezcla con grabar/
+                             transcribir, tiene su propio paso y su propia barra de progreso
+                             (misma IsDownloading/DownloadPercent del footer). -->
+                        <Border Background="{DynamicResource AccentSoft}" CornerRadius="8" Padding="10,8" Margin="0,0,0,10"
+                                Visibility="{Binding ShowDownloadModelBanner, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" FontSize="13" LineHeight="19" Foreground="{DynamicResource AccentText}"
+                                           Text="El modelo local todavía no está descargado (única vez, no necesita el motor Groq). Descargalo antes de grabar o transcribir con este motor."/>
+                                <Button Content="Descargar modelo" Style="{StaticResource SecondaryButton}"
+                                        Margin="0,8,0,0" Padding="10,5" FontSize="12" HorizontalAlignment="Left"
+                                        Command="{Binding DownloadModelCommand}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Aviso + botón de descarga de los modelos de identificación de
+                             hablantes: SOLO visible con "Identificar quién habla" activo
+                             (Configuración) y alguno de los dos modelos todavía sin bajar — igual
+                             criterio que el banner del modelo de Whisper de arriba, pero acá NO
+                             bloquea "Transcribir" (es un paso opcional, ver el comentario largo en
+                             MainViewModel, región "Descarga de los modelos de identificación de
+                             hablantes"). -->
+                        <Border Background="{DynamicResource AccentSoft}" CornerRadius="8" Padding="10,8" Margin="0,0,0,10"
+                                Visibility="{Binding ShowDownloadDiarizationModelsBanner, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" FontSize="13" LineHeight="19" Foreground="{DynamicResource AccentText}"
+                                           Text="Activaste 'Identificar quién habla', pero todavía faltan los modelos (chicos: decenas de MB, se bajan en segundos). Descargalos para que la próxima transcripción salga separada por persona."/>
+                                <Button Content="Descargar modelos de hablantes" Style="{StaticResource SecondaryButton}"
+                                        Margin="0,8,0,0" Padding="10,5" FontSize="12" HorizontalAlignment="Left"
+                                        Command="{Binding DownloadDiarizationModelsCommand}"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Paso 3: transcribir, en su propia fila fija (Row 4, ver A.2 arriba): el
+                         tooltip muestra el motivo REAL por el que está apagado
+                         (TranscribeDisabledReason), no un texto fijo: antes decía siempre "falta
+                         descargar el modelo" aunque el bloqueo fuera otro, y una usuaria real
+                         terminó bajando 1,5 GB sin necesidad. ShowOnDisabled para que el motivo se
+                         lea con el botón apagado, que es cuando importa. Fuera del ScrollViewer de
+                         la Row 3 a propósito: la acción primaria del producto no puede depender de
+                         que el usuario scrollee para encontrarla. -->
+                    <StackPanel Grid.Row="4" Margin="0,10,0,0">
+                        <Button Content="Transcribir" Style="{StaticResource PrimaryButton}"
+                                Command="{Binding TranscribeCommand}"
+                                ToolTipService.ShowOnDisabled="True"
+                                ToolTip="{Binding TranscribeDisabledReason}"
+                                Visibility="{Binding IsBusy, Converter={StaticResource InverseBoolToVisibility}}"/>
+                        <Button Content="Cancelar" Style="{StaticResource SecondaryButton}"
+                                Command="{Binding CancelCommand}"
+                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Panel: Transcripción -->
+            <Border Grid.Column="2" Style="{StaticResource Card}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Encabezado + acciones de edición -->
+                    <Grid Grid.Row="0" Margin="0,0,0,12">
+                        <TextBlock Text="Transcripción" Style="{StaticResource HeadingText}"
+                                   VerticalAlignment="Center"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <!-- Toggle Leer / Editar del transcript (paridad con la web). El botón del
+                                 modo activo se auto-deshabilita (CanExecute) y ese estado se usa para
+                                 resaltarlo, no para apagarlo: un solo estilo sirve para los dos. -->
+                            <Border CornerRadius="8" Background="{DynamicResource SurfaceAlt}" Padding="2"
+                                    Margin="0,0,10,0" VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal">
+                                    <StackPanel.Resources>
+                                        <Style x:Key="SegModeButton" TargetType="Button" BasedOn="{StaticResource NoMouseFocusVisual}">
+                                            <Setter Property="Cursor" Value="Hand"/>
+                                            <Setter Property="FontSize" Value="13"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border x:Name="seg" Background="Transparent" CornerRadius="6" Padding="14,5">
+                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsEnabled" Value="False">
+                                                                <Setter TargetName="seg" Property="Background" Value="{DynamicResource Accent}"/>
+                                                                <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </StackPanel.Resources>
+                                    <Button Content="Leer" Style="{StaticResource SegModeButton}"
+                                            Command="{Binding ShowTranscriptAsReadCommand}"
+                                            AutomationProperties.Name="Ver la transcripción para leerla"/>
+                                    <Button Content="Editar" Style="{StaticResource SegModeButton}"
+                                            Command="{Binding ShowTranscriptAsEditCommand}"
+                                            AutomationProperties.Name="Editar la transcripción"/>
+                                </StackPanel>
+                            </Border>
+                            <!-- Detalle nativo de la nota (resumen + formatos con IA, ver
+                                 NoteDetailWindow): deshabilitado hasta que la nota tenga un id
+                                 remoto confirmado (ver MainViewModel.CanOpenNoteDetail /
+                                 AudioItemVm.IsSyncedRemotely), ya que una nota creada localmente
+                                 que todavía no terminó un ciclo de sync no tiene id en el servidor. -->
+                            <Button Content="Asistente IA" Style="{StaticResource SecondaryButton}"
+                                    Margin="0,0,8,0" Command="{Binding OpenNoteDetailCommand}"
+                                    ToolTip="Abre el detalle nativo de esta nota: resumen y formatos con IA (necesita que ya esté sincronizada)."/>
+                            <Button Content="Copiar" Style="{StaticResource SecondaryButton}"
+                                    Margin="0,0,8,0" Command="{Binding CopyTranscriptCommand}"/>
+                            <Button Content="Guardar" Style="{StaticResource SecondaryButton}"
+                                    Margin="0,0,8,0" Command="{Binding SaveTranscriptCommand}"/>
+                            <!-- Corrige términos con el vocabulario del usuario y agrega puntuación
+                                 y párrafos (ver AiPolishClient) — pensado sobre todo para el camino
+                                 Local, que a diferencia de la nube no pasa por el corrector de
+                                 vocabulario al transcribir. Guarda el resultado igual que "Guardar". -->
+                            <!-- El texto del botón sale del ViewModel (PolishButtonText): pasa a
+                                 "Texto mejorado ✓" y se apaga cuando el texto actual ya se mejoró.
+                                 Se re-habilita solo si editás el transcript o si el resultado fue
+                                 parcial — ahí reintentar sí sirve. ShowOnDisabled para poder leer
+                                 el motivo con el botón apagado. -->
+                            <Button Content="{Binding PolishButtonText}" Style="{StaticResource SecondaryButton}"
+                                    Margin="0,0,8,0" Command="{Binding PolishTextCommand}"
+                                    ToolTipService.ShowOnDisabled="True"
+                                    ToolTip="{Binding PolishTooltip}"/>
+                            <Button ToolTip="Abrir carpeta de transcripciones"
+                                    Style="{StaticResource IconButton}"
+                                    AutomationProperties.Name="Abrir carpeta de transcripciones"
+                                    Command="{Binding OpenTranscriptsFolderCommand}">
+                                <Path Data="{StaticResource Icon.FolderOpen}" Style="{StaticResource IconGlyph}"/>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Reproductor -->
+                    <Border Grid.Row="1" Background="{DynamicResource SurfaceAlt}" CornerRadius="10"
+                            Padding="10,8" Margin="0,0,0,12">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" ToolTip="Reproducir"
+                                    Style="{StaticResource IconButton}" AutomationProperties.Name="Reproducir audio"
+                                    Command="{Binding PlayAudioCommand}">
+                                <Path Data="{StaticResource Icon.Play}" Style="{StaticResource IconGlyphFilled}"/>
+                            </Button>
+                            <Button Grid.Column="1" ToolTip="Detener"
+                                    Style="{StaticResource IconButton}" AutomationProperties.Name="Detener reproducción"
+                                    Command="{Binding StopAudioCommand}">
+                                <Path Data="{StaticResource Icon.Stop}" Style="{StaticResource IconGlyphFilled}"/>
+                            </Button>
+                            <!-- Nombre del audio cargado (cuando no suena) -->
+                            <TextBlock Grid.Column="2" Margin="10,0" VerticalAlignment="Center"
+                                       Text="{Binding SelectedAudio.FileName, TargetNullValue='Ningún audio seleccionado'}"
+                                       Foreground="{DynamicResource TextMuted}" FontSize="12"
+                                       TextTrimming="CharacterEllipsis"
+                                       Visibility="{Binding IsPlaying, Converter={StaticResource InverseBoolToVisibility}}"/>
+                            <!-- Tiempo + seek: solo mientras suena -->
+                            <Grid Grid.Column="2" Margin="8,0"
+                                  Visibility="{Binding IsPlaying, Converter={StaticResource BoolToVisibility}}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Slider Grid.Column="0" x:Name="PlaybackSlider" VerticalAlignment="Center"
+                                        Minimum="0" Maximum="{Binding PlaybackDuration}"
+                                        Value="{Binding PlaybackPosition}" IsMoveToPointEnabled="True"
+                                        AutomationProperties.Name="Posición de reproducción"
+                                        Thumb.DragStarted="OnSeekStart" Thumb.DragCompleted="OnSeekEnd"
+                                        PreviewMouseLeftButtonUp="OnSeekClick"/>
+                                <TextBlock Grid.Column="1" Text="{Binding PlaybackTimeText}"
+                                           Style="{StaticResource MonoText}"
+                                           VerticalAlignment="Center" Margin="10,0,0,0"/>
+                            </Grid>
+                            <Slider Grid.Column="4" Value="{Binding Volume}" Minimum="0" Maximum="1"
+                                    Width="90" VerticalAlignment="Center" ToolTip="Volumen"
+                                    AutomationProperties.Name="Volumen"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Texto transcrito (protagonista) / vista de proyecto -->
+                    <Border Grid.Row="2" Background="{DynamicResource SurfaceAlt}" CornerRadius="10"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1">
+                        <Grid>
+                            <!-- Empty state: nada seleccionado, o un audio sin transcript todavía
+                                 (ver MainViewModel.ShowEmptyPlaceholder). NO se muestra mientras hay
+                                 un PROYECTO seleccionado sin audio (ver vista de proyecto, abajo). -->
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                                        IsHitTestVisible="False" MaxWidth="320"
+                                        Visibility="{Binding ShowEmptyPlaceholder, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Text="Todavía no hay transcripción" HorizontalAlignment="Center"
+                                           FontWeight="SemiBold" FontSize="15" Foreground="{DynamicResource TextSecondary}"/>
+                                <TextBlock Text="Elegí un audio de la izquierda y presioná Transcribir. El texto va a aparecer acá y lo vas a poder editar."
+                                           TextAlignment="Center" TextWrapping="Wrap" Margin="0,6,0,0"
+                                           FontSize="12" Foreground="{DynamicResource TextMuted}"/>
+                            </StackPanel>
+
+                            <!-- Vista de proyecto (F3): clickear un PROYECTO en el árbol, sin audio
+                                 seleccionado, muestra acá su listado de archivos en vez de dejar el
+                                 panel vacío/confuso. Clickear un ítem selecciona ese audio (mismo
+                                 camino que el árbol, ver MainViewModel.SelectProjectFile) y esta
+                                 vista se oculta sola (ShowProjectFilesView pasa a false). -->
+                            <Grid Visibility="{Binding ShowProjectFilesView, Converter={StaticResource BoolToVisibility}}">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="16,14,16,6">
+                                    <Ellipse Width="10" Height="10" Margin="0,0,8,0" VerticalAlignment="Center"
+                                             Fill="{Binding SelectedProject.Color, Converter={StaticResource ProjectColorToBrush}}"/>
+                                    <TextBlock Text="{Binding SelectedProject.Title}" FontWeight="SemiBold" FontSize="16"
+                                               Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding SelectedProject.Audios.Count, StringFormat=' · {0} audio(s)'}"
+                                               Foreground="{DynamicResource TextMuted}" FontSize="12" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <TextBlock Grid.Row="0" Text="Todavía no tiene audios. Arrastrá uno a la izquierda."
+                                           Margin="16,44,16,6" FontSize="12" Foreground="{DynamicResource TextMuted}"
+                                           Visibility="{Binding SelectedProject.Audios.Count, Converter={StaticResource CountToVisibility}}"/>
+
+                                <ListBox Grid.Row="1" x:Name="ProjectFilesList"
+                                         ItemsSource="{Binding SelectedProject.Audios}"
+                                         SelectionMode="Single" SelectionChanged="OnProjectFileSelectionChanged"
+                                         BorderThickness="0" Background="Transparent" Margin="8,0,8,8"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                            <Setter Property="Padding" Value="8,8"/>
+                                            <Setter Property="Cursor" Value="Hand"/>
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type vm:AudioItemVm}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <!-- StatusGlyph ya comunica transcripto (✓) vs
+                                                     pendiente (●), sin necesitar una columna extra. -->
+                                                <TextBlock Grid.Column="0" Text="{Binding StatusGlyph}" Width="18"
+                                                           FontSize="12" VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource TextMuted}"/>
+                                                <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                                                    <TextBlock Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
+                                                               Foreground="{DynamicResource TextPrimary}"/>
+                                                    <TextBlock Text="{Binding SizeText}" FontSize="11"
+                                                               Foreground="{DynamicResource TextMuted}"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+
+                            <!-- Transcripción: Leer (documento con hablantes separados por color) o
+                                 Editar (el TextBox de siempre). Gateado por ShowProjectFilesView como
+                                 estaba el TextBox; adentro alterna por TranscriptReadMode. Paridad con
+                                 la vista Leer de la web (ver TranscriptReader). -->
+                            <Grid Visibility="{Binding ShowProjectFilesView, Converter={StaticResource InverseBoolToVisibility}}">
+                                <!-- EDITAR. Foreground explícito: el TextBox sin Style propio usa la
+                                     plantilla default de WPF, que fija su propio Foreground (no hereda
+                                     del Window) y quedaba casi del color del fondo oscuro (ver changelog
+                                     2026-07-13, "Contraste de texto"). TextPrimary contrasta fuerte
+                                     contra Bg/SurfaceAlt en ambos temas. -->
+                                <TextBox Text="{Binding TranscriptText, UpdateSourceTrigger=PropertyChanged}"
+                                         TextWrapping="Wrap" AcceptsReturn="True" SpellCheck.IsEnabled="True"
+                                         VerticalScrollBarVisibility="Auto" BorderThickness="0"
+                                         Background="Transparent" Foreground="{DynamicResource TextPrimary}"
+                                         Padding="14" FontSize="14"
+                                         Visibility="{Binding TranscriptReadMode, Converter={StaticResource InverseBoolToVisibility}}"/>
+
+                                <!-- LEER: documento serif con los turnos por hablante. El ScrollViewer
+                                     bornea la altura (la celda es fila estrella, no Auto), así el texto
+                                     largo scrollea adentro. -->
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="14,4,14,14"
+                                              Visibility="{Binding TranscriptReadMode, Converter={StaticResource BoolToVisibility}}">
+                                    <ItemsControl ItemsSource="{Binding TranscriptBlocks}"
+                                                  HorizontalAlignment="Left" MaxWidth="720">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type vm:SpeakerBlockVm}">
+                                                <StackPanel Margin="0,0,0,18">
+                                                    <TextBlock Text="{Binding DisplayLabel}"
+                                                               Visibility="{Binding HasLabel, Converter={StaticResource BoolToVisibility}}"
+                                                               FontSize="11" FontWeight="SemiBold" Margin="0,0,0,4">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="{DynamicResource SpeakerNeutral}"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding ColorSlot}" Value="0"><Setter Property="Foreground" Value="{DynamicResource Speaker0}"/></DataTrigger>
+                                                                    <DataTrigger Binding="{Binding ColorSlot}" Value="1"><Setter Property="Foreground" Value="{DynamicResource Speaker1}"/></DataTrigger>
+                                                                    <DataTrigger Binding="{Binding ColorSlot}" Value="2"><Setter Property="Foreground" Value="{DynamicResource Speaker2}"/></DataTrigger>
+                                                                    <DataTrigger Binding="{Binding ColorSlot}" Value="3"><Setter Property="Foreground" Value="{DynamicResource Speaker3}"/></DataTrigger>
+                                                                    <DataTrigger Binding="{Binding ColorSlot}" Value="4"><Setter Property="Foreground" Value="{DynamicResource Speaker4}"/></DataTrigger>
+                                                                    <DataTrigger Binding="{Binding ColorSlot}" Value="5"><Setter Property="Foreground" Value="{DynamicResource Speaker5}"/></DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                                                               FontFamily="Georgia" FontSize="15" LineHeight="26"
+                                                               LineStackingStrategy="BlockLineHeight"
+                                                               Foreground="{DynamicResource TextPrimary}"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+
+                            <!-- Resultados de búsqueda (2026-07-14, ver MainViewModel.SearchCommand,
+                                 ShowSearchResults): overlay OPAQUO sobre el resto del panel, último
+                                 hijo del Grid, se pinta encima por orden de declaración, con
+                                 Background propio para taparlos del todo (mismo criterio "estados
+                                 mutuamente excluyentes en la misma celda" que ya usa este Grid para
+                                 ShowEmptyPlaceholder/ShowProjectFilesView). -->
+                            <Grid Background="{DynamicResource SurfaceAlt}"
+                                  Visibility="{Binding ShowSearchResults, Converter={StaticResource BoolToVisibility}}">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" Margin="16,14,16,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" FontWeight="SemiBold" FontSize="15"
+                                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                               Text="{Binding SearchQuery, StringFormat='Resultados para &quot;{0}&quot;'}"/>
+                                    <Button Grid.Column="1" Content="✕ Cerrar" Style="{StaticResource LinkButton}"
+                                            FontSize="11" Command="{Binding ClearSearchCommand}"/>
+                                </Grid>
+
+                                <controls:Spinner Grid.Row="1" Width="24" Height="24" HorizontalAlignment="Center"
+                                                   Margin="0,20,0,0"
+                                                   Visibility="{Binding IsSearching, Converter={StaticResource BoolToVisibility}}"/>
+
+                                <TextBlock Grid.Row="1" Text="{Binding SearchError}" Foreground="{DynamicResource Danger}"
+                                           TextWrapping="Wrap" FontSize="12" TextAlignment="Center" Margin="16,20,16,0"
+                                           Visibility="{Binding SearchError, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                                              Visibility="{Binding IsSearching, Converter={StaticResource InverseBoolToVisibility}}">
+                                    <ItemsControl ItemsSource="{Binding SearchResults}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="{DynamicResource Surface}" CornerRadius="10" Padding="12"
+                                                        Margin="16,0,16,10" Cursor="Hand"
+                                                        MouseLeftButtonUp="OnSearchResultClick">
+                                                    <StackPanel>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="{Binding Title}" FontWeight="SemiBold"
+                                                                       FontSize="13" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock Grid.Column="1" Text="{Binding DateText}" FontSize="11"
+                                                                       Foreground="{DynamicResource TextMuted}" Margin="8,0,0,0"/>
+                                                        </Grid>
+                                                        <TextBlock Text="{Binding Snippet}" TextWrapping="Wrap" FontSize="12"
+                                                                   MaxHeight="48" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"
+                                                                   Foreground="{DynamicResource TextSecondary}"/>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+                        </Grid>
+                    </Border>
+
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- ===================== Footer: estado ===================== -->
+        <Border Grid.Row="4" Style="{StaticResource Card}" CornerRadius="12" Padding="16,11">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding StatusMessage}"
+                           VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"
+                           TextTrimming="CharacterEllipsis"/>
+
+                <!-- Inventario ("N audio(s) en M proyecto(s)."), canal propio (A.4,
+                     DESIGN-REVIEW-2026-07-16.md): antes vivía en StatusMessage y el
+                     FileSystemWatcher (ver MainViewModel._refreshDebounce) lo pisaba a los 400ms —
+                     justo en el caso de una importación parcial ("N ignorado(s) por formato no
+                     soportado"), que es cuando más hacía falta leerlo. Ver
+                     MainViewModel.InventoryText. -->
+                <TextBlock Grid.Column="1" Text="{Binding InventoryText}" Margin="10,0,0,0"
+                           VerticalAlignment="Center" Foreground="{DynamicResource TextMuted}"
+                           FontSize="12"
+                           Visibility="{Binding InventoryText, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+
+                <Border Grid.Column="2" Margin="10,0" Padding="10,4" CornerRadius="6"
+                        Background="{DynamicResource SurfaceAlt}" VerticalAlignment="Center"
+                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding ElapsedText}" VerticalAlignment="Center"
+                                   FontFamily="{StaticResource AppFontMono}" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextPrimary}"/>
+                    </StackPanel>
+                </Border>
+
+                <ProgressBar Grid.Column="3" Width="180" Height="8"
+                             Minimum="0" Maximum="100" Value="{Binding DownloadPercent}"
+                             Foreground="{DynamicResource Accent}" Background="{DynamicResource SurfaceAlt}"
+                             BorderThickness="0"
+                             Visibility="{Binding IsDownloading, Converter={StaticResource BoolToVisibility}}"/>
+                <ProgressBar Grid.Column="3" Width="180" Height="8"
+                             Minimum="0" Maximum="100" Value="{Binding TranscribePercent}"
+                             IsIndeterminate="{Binding TranscribeIndeterminate}"
+                             Foreground="{DynamicResource Accent}" Background="{DynamicResource SurfaceAlt}"
+                             BorderThickness="0"
+                             Visibility="{Binding IsTranscribing, Converter={StaticResource BoolToVisibility}}"/>
+            </Grid>
+        </Border>
+        </Grid>
+    </Grid>
+</Window>

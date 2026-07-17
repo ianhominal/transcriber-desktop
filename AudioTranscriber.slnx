@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AudioTranscriber.App/AudioTranscriber.App.csproj" />
+    <Project Path="src/AudioTranscriber.Core/AudioTranscriber.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AudioTranscriber.Core.Tests/AudioTranscriber.Core.Tests.csproj" />
+    <Project Path="tests/AudioTranscriber.App.UiTests/AudioTranscriber.App.UiTests.csproj" />
+  </Folder>
+</Solution>

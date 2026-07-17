@@ -1,0 +1,22 @@
+<UserControl x:Class="AudioTranscriber.App.Controls.Spinner"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Width="16" Height="16" Focusable="False">
+
+    <!-- La animación de giro se arranca por CODE-BEHIND (ver Spinner.xaml.cs), NO por
+         Storyboard.TargetName en un ControlTemplate. Ese patrón crasheaba en runtime con
+         "El nombre 'Arc' no se encuentra en el ámbito de nombres de ControlTemplate": un
+         Storyboard que referencia por nombre un elemento de un template no siempre resuelve el
+         NameScope al instanciarse. Acá el RotateTransform tiene x:Name (campo del code-behind del
+         UserControl, sin depender de ningún NameScope de template) y se anima directo. -->
+    <Grid>
+        <Ellipse StrokeThickness="2" Stroke="{DynamicResource Border}"/>
+        <Ellipse StrokeThickness="2" Stroke="{DynamicResource Accent}"
+                 StrokeDashArray="2.3 10" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                 RenderTransformOrigin="0.5,0.5">
+            <Ellipse.RenderTransform>
+                <RotateTransform x:Name="ArcRotate" Angle="0"/>
+            </Ellipse.RenderTransform>
+        </Ellipse>
+    </Grid>
+</UserControl>

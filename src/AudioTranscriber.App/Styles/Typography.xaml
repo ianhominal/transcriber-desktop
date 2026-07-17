@@ -1,0 +1,65 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        ===== Tipografía =====
+        Escala de tamaños/pesos reutilizable. Estilos con x:Key (opt-in): aplicarlos a mano en
+        cada TextBlock no rompe nada existente y deja explícito qué jerarquía tiene cada texto.
+    -->
+
+    <FontFamily x:Key="AppFont">Segoe UI</FontFamily>
+    <FontFamily x:Key="AppFontMono">Consolas</FontFamily>
+
+    <!-- Título de ventana (ej. "Configuración", "Vocabulario"). El token declaraba 20, pero los
+         8 consumidores lo pisaban a mano (7 en 18, uno en AppTitleText de acá abajo) — el setter
+         nunca renderizaba. Bajado a 18 para que el valor blanquee lo que ya se veía en pantalla
+         (cambio neutro en píxeles, no un rediseño). Ver DESIGN-REVIEW-2026-07-16.md, Tanda C.1. -->
+    <Style x:Key="TitleText" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="18"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+    </Style>
+
+    <!-- Título de la ventana principal: header compuesto (título + carpeta + estado de sync),
+         no un simple título de ventana — por eso un token propio en vez de un override suelto de
+         FontSize sobre TitleText (MainWindow.xaml era el único caso que no calzaba en 18). -->
+    <Style x:Key="AppTitleText" TargetType="TextBlock" BasedOn="{StaticResource TitleText}">
+        <Setter Property="FontSize" Value="21"/>
+    </Style>
+
+    <!-- Título de sección/panel (ej. "Proyectos", "Transcripción") -->
+    <Style x:Key="HeadingText" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="16"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+    </Style>
+
+    <!-- Subtítulo / descripción corta bajo un título -->
+    <Style x:Key="SubtitleText" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+    </Style>
+
+    <!-- Etiqueta de campo/sección en mayúscula pequeña (ej. "CUENTA") -->
+    <Style x:Key="SectionLabel" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
+    </Style>
+
+    <!-- Texto auxiliar / caption -->
+    <Style x:Key="CaptionText" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextMuted}"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+    </Style>
+
+    <!-- Texto monoespaciado (cronómetros, logs) -->
+    <Style x:Key="MonoText" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontMono}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+    </Style>
+
+</ResourceDictionary>

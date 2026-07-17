@@ -1,0 +1,45 @@
+# ---- Build outputs (.NET) ----
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# ---- Visual Studio / Rider ----
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ---- Velopack / artefactos de publicación (pesados, se regeneran) ----
+publish/
+Releases/
+*.nupkg
+*.Setup.exe
+
+# ---- Tests ----
+[Tt]est[Rr]esults/
+
+# ---- Modelos y binarios grandes (no van al repo; se bajan/instalan aparte) ----
+*.onnx
+*.gguf
+*.ggml
+models/
+
+# ---- Tooling local (misma convención que el repo web) ----
+.claude/
+CLAUDE.md
+
+# ---- Secretos / entorno ----
+*.env
+.env.local
+appsettings.*.local.json
+
+# ---- OS ----
+Thumbs.db
+ehthumbs.db
+.DS_Store

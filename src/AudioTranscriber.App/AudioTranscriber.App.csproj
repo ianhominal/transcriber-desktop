@@ -1,0 +1,76 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\AudioTranscriber.Core\AudioTranscriber.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      UseWindowsForms implicitly adds a PROJECT-WIDE global using for System.Windows.Forms (see
+      ImplicitUsings). Combined with UseWPF, that collides across the whole project with
+      System.Windows/System.Windows.Controls/System.Windows.Input types that share a name
+      (Application, UserControl, MouseEventArgs, DragEventArgs, KeyEventArgs, Point...), breaking
+      every WPF file that has a plain "using System.Windows;" and never even touches WinForms.
+      Removing the global using keeps WinForms available only where explicitly referenced via the
+      "WinForms = System.Windows.Forms" alias (see TrayIconService.cs). UseWindowsForms also
+      implicitly globalizes System.Drawing (Point, etc.), which collides the same way with
+      System.Windows.Point in WPF code-behind files (e.g. MainWindow.xaml.cs) — removed for the
+      same reason; TrayIconService.cs already has its own explicit "using System.Drawing;".
+    -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Sentry" Version="6.6.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.9" />
+    <PackageReference Include="Velopack" Version="1.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      EmbeddedResource (.NET plano, vía Assembly.GetManifestResourceStream), NO <Resource> (el
+      mecanismo de pack URI de WPF, pack://application:,,,/appicon.ico). Los pack URI dependen de
+      Assembly.Location, que queda VACÍO cuando la app se publica con PublishSingleFile=true (ver
+      publish command en el changelog) — eso hacía crashear la app instalada en el arranque con
+      "No se encuentra el recurso 'appicon.ico'." (ver TrayIconService.LoadTrayIconSource, que lee
+      este LogicalName). GetManifestResourceStream no depende de Location, así que funciona igual
+      en single-file y en builds normales.
+    -->
+    <EmbeddedResource Include="appicon.ico" LogicalName="AppIcon.ico" />
+  </ItemGroup>
+
+  <!--
+    Custom entry point para Velopack: App.xaml deja de ser ApplicationDefinition (que genera un
+    Main() automático que arranca WPF ANTES de que podamos correr VelopackApp.Build().Run()) y pasa
+    a ser un Page normal; el Main real vive en App.xaml.cs (ver StartupObject abajo). Patrón
+    documentado por Velopack para WPF: https://docs.velopack.io/getting-started/csharp
+  -->
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!--
+      Required for System.Windows.Forms.NotifyIcon (see TrayIconService), which replaced
+      H.NotifyIcon.Wpf: its TaskbarIcon never became visible on the user's Windows 10 (build
+      19045), a documented repaint bug in that library on Windows 10. WinForms.NotifyIcon
+      registers the tray icon synchronously and does not share that bug. WPF's Dispatcher already
+      pumps the Win32 message queue this control needs, so no System.Windows.Forms.Application.Run
+      is required.
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>appicon.ico</ApplicationIcon>
+    <AssemblyName>AudioTranscriber</AssemblyName>
+    <Version>1.0.50</Version>
+    <StartupObject>AudioTranscriber.App.App</StartupObject>
+  </PropertyGroup>
+
+</Project>

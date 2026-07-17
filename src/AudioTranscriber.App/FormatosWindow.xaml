@@ -1,0 +1,138 @@
+<Window x:Class="AudioTranscriber.App.FormatosWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:AudioTranscriber.App.Controls"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Formatos — Audio Transcriber" Height="640" Width="520"
+        MinHeight="440" MinWidth="420"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource Bg}" FontFamily="Segoe UI" FontSize="14"
+        Foreground="{DynamicResource TextPrimary}">
+
+    <!-- Gestión NATIVA del catálogo de Formatos (crear/editar/borrar/marcar default), mismo
+         criterio "Híbrido nativo" que VocabularyWindow/NoteDetailWindow. Ver FormatosViewModel. -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="36"
+                             ResizeBorderThickness="6"
+                             GlassFrameThickness="0"
+                             CornerRadius="0"
+                             UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <controls:TitleBar x:Name="WindowTitleBar" Grid.Row="0" TitleText="Formatos"/>
+
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="18">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Formatos" Style="{StaticResource TitleText}"/>
+                        <TextBlock Text="Instrucciones reutilizables de IA para aplicar a tus notas (ej. actas, resúmenes ejecutivos)."
+                                   Style="{StaticResource CaptionText}" Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="+ Nuevo formato" Style="{StaticResource PrimaryButton}"
+                            VerticalAlignment="Top" Command="{Binding CreateRecipeCommand}"/>
+                </Grid>
+
+                <TextBlock Grid.Row="1" Text="{Binding ErrorMessage}" Foreground="{DynamicResource Danger}"
+                           TextWrapping="Wrap" FontSize="12" Margin="0,10,0,0"
+                           Visibility="{Binding ErrorMessage, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
+
+                <!-- Fila 2 vacía a propósito (mantiene la numeración de filas consistente con
+                     VocabularyWindow si en el futuro se agrega algo entre el header y la lista). -->
+
+                <Grid Grid.Row="3" Margin="0,14,0,0">
+                    <controls:Spinner Width="24" Height="24" HorizontalAlignment="Center" VerticalAlignment="Top"
+                                       Margin="0,20,0,0"
+                                       Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"/>
+
+                    <TextBlock Text="Todavía no tenés formatos guardados. Creá el primero con &quot;+ Nuevo formato&quot;."
+                               TextWrapping="Wrap" FontSize="12" HorizontalAlignment="Center"
+                               Margin="0,20,0,0" Foreground="{DynamicResource TextMuted}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding IsLoading}" Value="False"/>
+                                            <Condition Binding="{Binding Recipes.Count}" Value="0"/>
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  Visibility="{Binding IsLoading, Converter={StaticResource InverseBoolToVisibility}}">
+                        <ItemsControl ItemsSource="{Binding Recipes}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="10"
+                                            Padding="12" Margin="0,0,0,10">
+                                        <StackPanel>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
+                                                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                                    <Border Background="{DynamicResource AccentSoft}" CornerRadius="5"
+                                                            Padding="6,2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                            Visibility="{Binding IsDefault, Converter={StaticResource BoolToVisibility}}">
+                                                        <TextBlock Text="Default" FontSize="10" FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource AccentText}"/>
+                                                    </Border>
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <TextBlock Text="{Binding Instruction}" FontSize="12" TextWrapping="Wrap"
+                                                       TextTrimming="CharacterEllipsis" MaxHeight="34"
+                                                       Foreground="{DynamicResource TextSecondary}" Margin="0,6,0,10"/>
+
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                <Button Content="Marcar default" Style="{StaticResource SecondaryButton}"
+                                                        Padding="10,5" FontSize="11" Margin="0,0,6,0"
+                                                        Visibility="{Binding IsDefault, Converter={StaticResource InverseBoolToVisibility}}"
+                                                        Command="{Binding DataContext.SetDefaultRecipeCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        CommandParameter="{Binding}"/>
+                                                <Button Content="Editar" Style="{StaticResource SecondaryButton}"
+                                                        Padding="10,5" FontSize="11" Margin="0,0,6,0"
+                                                        Command="{Binding DataContext.EditRecipeCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        CommandParameter="{Binding}"/>
+                                                <Button Content="Borrar" Style="{StaticResource DangerButton}"
+                                                        Padding="10,5" FontSize="11"
+                                                        Command="{Binding DataContext.DeleteRecipeCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                        CommandParameter="{Binding}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

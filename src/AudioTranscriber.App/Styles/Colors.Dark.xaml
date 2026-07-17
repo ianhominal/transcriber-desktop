@@ -1,0 +1,152 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        ===== Semantic palette — DARK THEME (v1.0.21 redesign) =====
+        Same keys as Colors.Light.xaml (see that file), own values. ThemeManager decides at runtime
+        which of the two dictionaries is merged.
+
+        v1.0.21 fixes a "flat/washed out" dark palette reported after v1.0.20 shipped: Bg and Surface
+        were only ~9 perceived-brightness points apart, so panels never separated from the window
+        background, secondary/muted text was too dim to read, and the whole palette read as a dull
+        blue-gray instead of a deliberate dark theme. This revision:
+          - Widens the surface elevation ladder (Bg -> Surface -> SurfaceAlt) to ~15/~11 brightness
+            points per step (was ~9/~7), so panels are clearly "lifted" off the window background.
+          - Lifts TextSecondary/TextMuted contrast so secondary labels (file sizes, statuses) read
+            comfortably (contrast ratio ~8.6:1 / ~5.4:1 against Surface).
+          - Strengthens Border/BorderStrong so panel edges are visible instead of nearly invisible.
+          - Shifts the gray tint from cold blue-leaning (B channel clearly highest) to a neutral/violet
+            cast (R and B close, G a touch lower) so surfaces harmonize with the indigo accent instead
+            of reading as "dirty blue".
+        Never pure black / pure white — surfaces and text both keep a slight tint.
+    -->
+
+    <!-- Accent (brand) — RELLENO del botón primario (para el acento como TINTA, ver AccentText).
+         Revisión de accesibilidad 2026-07-16: los valores anteriores (#6366F1 / #7B7FF3 / #4F46E5)
+         daban 4.47:1 y 3.40:1 con el texto blanco encima — los dos por debajo del 4.5:1 de AA, y el
+         hover es JUSTO el estado en el que está el botón cuando lo vas a apretar.
+         El texto ya era blanco puro, así que la única salida era ajustar el acento.
+
+         Esto INVIERTE a propósito lo que decía el comentario anterior ("oscurecer un acento ya
+         oscuro sobre superficie oscura mata la legibilidad"): esa regla se escribió mirando el
+         acento contra la SUPERFICIE, y es cierta para eso — por eso AccentText va por el lado
+         claro. Pero el botón primario tiene texto blanco ENCIMA, y ahí la relación se invierte:
+         cuanto más claro el relleno, menos se lee el texto. Son dos problemas opuestos y no se
+         pueden resolver con el mismo color; por eso ahora son dos tokens.
+
+         Los tres estados quedan progresivamente más oscuros y distinguibles entre sí
+         (PaletteContrastTests lo verifica: contraste con el blanco Y separación entre estados). -->
+    <Color x:Key="AccentColor">#5B5EE8</Color>
+    <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentColor}"/>
+    <SolidColorBrush x:Key="AccentHover" Color="#5754E6"/>
+    <SolidColorBrush x:Key="AccentPressed" Color="#4F46E5"/>
+    <SolidColorBrush x:Key="AccentSoft" Color="#2E2C52"/>
+
+    <!-- Acento como TINTA (texto/íconos), NO como relleno. Un color pensado para rellenar un botón
+         no sirve automáticamente como texto: `Accent` (#6366F1) sobre Surface daba 2.94:1 — muy por
+         debajo del 4.5:1 de AA — y sin embargo pintaba texto en banners y links (MainWindow:78, 409,
+         412, 445, 567, 585; Inputs:86). Este es el shade 300 de indigo, siguiendo la MISMA regla que
+         el comentario de los colores de proyecto ya documentaba ("dark = más claro que light"): la
+         regla estaba escrita, se aplicó a los 12 colores de proyecto, y justo se olvidó acá.
+         Verificado por PaletteContrastTests, que ahora sí lo mide. -->
+    <SolidColorBrush x:Key="AccentText" Color="#A5B4FC"/>
+
+    <!-- Colores de hablante para la vista "Leer" de una transcripción (nombres "Persona N" con
+         color, ver TranscriptReader/SpeakerColorAssigner y su equivalente web). Tonos claros para
+         que contrasten sobre Surface oscuro (#24222E): son texto chico, así que apuntan a AA 4.5:1,
+         medido en PaletteContrastTests. "SpeakerNeutral" es para "Sin identificar". -->
+    <SolidColorBrush x:Key="Speaker0" Color="#A5B4FC"/>
+    <SolidColorBrush x:Key="Speaker1" Color="#2DD4BF"/>
+    <SolidColorBrush x:Key="Speaker2" Color="#FDA4AF"/>
+    <SolidColorBrush x:Key="Speaker3" Color="#FBBF24"/>
+    <SolidColorBrush x:Key="Speaker4" Color="#38BDF8"/>
+    <SolidColorBrush x:Key="Speaker5" Color="#C4B5FD"/>
+    <SolidColorBrush x:Key="SpeakerNeutral" Color="#9BA0AE"/>
+
+    <!-- Surfaces: Bg is the window background (the darkest layer). Surface/SurfaceAlt are "elevated"
+         and now clearly lighter than Bg (~15 and ~26 perceived-brightness points above Bg,
+         respectively) so panels visibly separate from the window instead of blending into it. -->
+    <SolidColorBrush x:Key="Bg" Color="#15141B"/>
+    <SolidColorBrush x:Key="Surface" Color="#24222E"/>
+    <SolidColorBrush x:Key="SurfaceAlt" Color="#2F2C3B"/>
+    <SolidColorBrush x:Key="SurfacePressed" Color="#1F1D28"/>
+
+    <!-- Borders: brightened so panel/card edges are actually visible against the new surfaces
+         (contrast ratio vs Surface roughly +20% over v1.0.20 for Border, +40% for BorderStrong). -->
+    <SolidColorBrush x:Key="Border" Color="#403E4F"/>
+    <SolidColorBrush x:Key="BorderStrong" Color="#5C5B73"/>
+
+    <!-- Text: TextPrimary is not pure white (avoids eye strain on dark backgrounds). TextSecondary
+         and TextMuted are both raised versus v1.0.20 so secondary labels stay legible. -->
+    <SolidColorBrush x:Key="TextPrimary" Color="#F1F2F6"/>
+    <SolidColorBrush x:Key="TextSecondary" Color="#BCC0CC"/>
+    <!-- Aclarado apenas desde #9297A5: contra AccentSoft (el fondo de los banners) daba 4.4999:1 —
+         fallaba AA por milésimas. Contra las superficies normales ya pasaba holgado; el borde
+         estaba justo en el caso que nadie había medido. -->
+    <SolidColorBrush x:Key="TextMuted" Color="#9BA0AE"/>
+    <SolidColorBrush x:Key="TextOnAccent" Color="#FFFFFF"/>
+
+    <!-- Semantic states: base tones unchanged (still saturated/light enough to read on dark
+         surfaces); Soft backgrounds nudged up slightly so state chips/badges stay visibly lifted
+         off the new, lighter Surface instead of nearly merging with it. -->
+    <SolidColorBrush x:Key="Success" Color="#22C55E"/>
+    <SolidColorBrush x:Key="SuccessSoft" Color="#17301F"/>
+    <SolidColorBrush x:Key="Warning" Color="#F59E0B"/>
+    <SolidColorBrush x:Key="WarningSoft" Color="#332711"/>
+    <SolidColorBrush x:Key="Danger" Color="#F87171"/>
+    <SolidColorBrush x:Key="DangerHover" Color="#EF4444"/>
+    <SolidColorBrush x:Key="DangerSoft" Color="#40201F"/>
+
+    <!-- Disabled -->
+    <SolidColorBrush x:Key="DisabledSurface" Color="#403E4D"/>
+    <SolidColorBrush x:Key="DisabledText" Color="#838791"/>
+
+    <!-- Texto sobre un botón deshabilitado con relleno (PrimaryButton). Clave PROPIA, separada de
+         DisabledText a propósito: esa otra gobierna el texto de inputs deshabilitados sobre
+         SurfaceAlt (Inputs.xaml:29, :63) y tocarla para arreglar el botón haría que un input
+         deshabilitado se lea como habilitado. Dos superficies distintas necesitan dos tintas. -->
+    <SolidColorBrush x:Key="DisabledTextOnDisabledSurface" Color="#E4E6EB"/>
+
+    <!-- Texto sobre los botones de peligro (relleno Danger/DangerHover). Sobre un rojo claro como
+         el de este tema, la tinta tiene que ser OSCURA: el blanco daría ~2.5:1. -->
+    <SolidColorBrush x:Key="TextOnDanger" Color="#2A0A0A"/>
+
+    <!-- Foco de teclado (accesibilidad).
+         SIN Opacity, y ese es el punto: WPF aplica Opacity al elemento entero, así que lo que el ojo
+         ve no es el color declarado sino la mezcla contra el fondo. Antes esto era el acento a 0.55
+         → 1.96:1 sobre Surface y 2.08:1 sobre Bg: un anillo de foco invisible, con un comentario al
+         lado que decía "visible (accesibilidad)". El color correcto con opacidad puede no verse.
+         Regla: el foco se declara con un color sólido que contraste, nunca con transparencia. -->
+    <SolidColorBrush x:Key="FocusRing" Color="#A5B4FC"/>
+
+    <!-- Dark panel (detailed progress log): already dark in the light theme (a terminal-style panel,
+         always dark by design). Kept darker than the new Bg so it still reads as its own panel
+         instead of blending with the window. -->
+    <SolidColorBrush x:Key="Ink" Color="#111217"/>
+    <SolidColorBrush x:Key="InkText" Color="#C5C8D3"/>
+
+    <!-- Scrollbar / slider controls -->
+    <SolidColorBrush x:Key="ScrollThumb" Color="#5C5B73"/>
+    <SolidColorBrush x:Key="ScrollThumbHover" Color="#726F8A"/>
+
+    <!--
+        ===== "Color por proyecto" palette (F2, see changelog) — DARK THEME =====
+        Same 12 keys as Colors.Light.xaml (see that file for the full rationale), own values.
+        Convention: dark theme = Tailwind shade 400 of each family (lighter/more saturated than the
+        light theme's 600, for visibility against the dark surfaces — same weight rule the rest of
+        this file already follows implicitly for Accent/Success/Warning/Danger).
+    -->
+    <SolidColorBrush x:Key="ProjectRed" Color="#F87171"/>
+    <SolidColorBrush x:Key="ProjectOrange" Color="#FB923C"/>
+    <SolidColorBrush x:Key="ProjectAmber" Color="#FBBF24"/>
+    <SolidColorBrush x:Key="ProjectGreen" Color="#4ADE80"/>
+    <SolidColorBrush x:Key="ProjectTeal" Color="#2DD4BF"/>
+    <SolidColorBrush x:Key="ProjectCyan" Color="#22D3EE"/>
+    <SolidColorBrush x:Key="ProjectBlue" Color="#60A5FA"/>
+    <SolidColorBrush x:Key="ProjectIndigo" Color="#818CF8"/>
+    <SolidColorBrush x:Key="ProjectViolet" Color="#A78BFA"/>
+    <SolidColorBrush x:Key="ProjectPurple" Color="#C084FC"/>
+    <SolidColorBrush x:Key="ProjectPink" Color="#F472B6"/>
+    <SolidColorBrush x:Key="ProjectRose" Color="#FB7185"/>
+
+</ResourceDictionary>
