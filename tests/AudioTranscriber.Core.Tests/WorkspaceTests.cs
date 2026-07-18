@@ -260,6 +260,44 @@ public class WorkspaceTests : IDisposable
     }
 
     [Fact]
+    public void DeleteAudios_MueveTodaLaListaAPapelera_DejaElRestoIntacto()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "uno.mp3"), "audio-bytes");
+        File.WriteAllText(Path.Combine(ws.TranscriptsPath, "uno.txt"), "contenido");
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "dos.mp3"), "audio-bytes");
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "tresIntacto.mp3"), "audio-bytes");
+
+        var audios = ws.ListAudios();
+        var aBorrar = audios.Where(a => a.FileName is "uno.mp3" or "dos.mp3").ToList();
+
+        ws.DeleteAudios(aBorrar);
+
+        var restantes = ws.ListAudios();
+        var intacto = Assert.Single(restantes);
+        Assert.Equal("tresIntacto.mp3", intacto.FileName);
+        Assert.True(File.Exists(intacto.FullPath));
+
+        // Los dos borrados (uno con transcript, uno sin) terminaron en .papelera/, no se perdieron.
+        var papeleraRoot = Path.Combine(_root, ".papelera");
+        var buckets = Directory.EnumerateDirectories(papeleraRoot).ToList();
+        Assert.Contains(buckets, b => File.Exists(Path.Combine(b, "uno.mp3")) && File.Exists(Path.Combine(b, "uno.txt")));
+        Assert.Contains(buckets, b => File.Exists(Path.Combine(b, "dos.mp3")));
+    }
+
+    [Fact]
+    public void DeleteAudios_ListaVacia_NoHaceNada()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "intacto.mp3"), "audio-bytes");
+
+        ws.DeleteAudios(Array.Empty<AudioItem>());
+
+        Assert.Single(ws.ListAudios());
+        Assert.False(Directory.Exists(Path.Combine(_root, ".papelera")));
+    }
+
+    [Fact]
     public void DeleteProjectPermanently_BorraDeVerdadSinPasarPorPapelera()
     {
         var ws = Workspace.OpenOrCreate(_root);

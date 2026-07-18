@@ -250,13 +250,21 @@
                         <!-- MinHeight: el árbol nunca puede quedar en 0 aunque el stack de
                              acciones de la Row 3 pida más espacio del disponible — antes, con la
                              Row 3 en Auto, el stack se llevaba todo el alto que quisiera y esta
-                             fila colapsaba a 0 (ver A.2, DESIGN-REVIEW-2026-07-16.md). -->
+                             fila colapsaba a 0 (ver A.2, DESIGN-REVIEW-2026-07-16.md). Rediseño
+                             Variante A (2026-07-17): la Row 3 volvió a Auto (ver comentario ahí),
+                             así que ahora esta es la ÚNICA fila con "*" del panel — se lleva TODO
+                             el sobrante y es la ÚNICA zona con scroll del panel izquierdo. El
+                             MinHeight se conserva igual, como piso de seguridad. -->
                         <RowDefinition Height="*" MinHeight="120"/>
-                        <!-- Antes era Auto: una fila Auto se mide con alto infinito, así que el
-                             ScrollViewer de abajo nunca llegaba a acotarse y jamás mostraba barra
-                             (gotcha conocido de Grid en WPF). Con "*" comparte el espacio sobrante
-                             con la Row 2 y el ScrollViewer sí queda acotado y puede scrollear. -->
-                        <RowDefinition Height="*"/>
+                        <!-- Variante A del rediseño (2026-07-17): vuelve a Auto a propósito — el
+                             bloque de acciones (destino/importar/grabar/ajustes) deja de vivir en
+                             un ScrollViewer propio (ver más abajo, ya no existe) y pasa a ser un
+                             StackPanel de alto NATURAL y FIJO. Antes, con "*" acá, este stack
+                             competía con el árbol de la Row 2 por el espacio sobrante y terminaba
+                             mostrando DOS scrollbars a la vez (una del árbol, otra de este stack) —
+                             apretado y confuso. Con Auto, el árbol de arriba pasa a ser la única
+                             zona que scrollea. -->
+                        <RowDefinition Height="Auto"/>
                         <!-- "Transcribir" en su propia fila fija, fuera del área con scroll: la
                              acción primaria del producto no puede depender de que el usuario
                              scrollee para encontrarla. -->
@@ -381,15 +389,23 @@
                                              está prendido (botón "Unir notas" del header, ver más abajo):
                                              por defecto la lista queda limpia, sin checkboxes. Marca
                                              este audio para unirlo con otros (ver
-                                             MainViewModel.MergeSelectedCommand). Solo notas ya
-                                             sincronizadas se pueden unir (el backend opera sobre ids
-                                             remotos, ver AudioItemVm.IsSyncedRemotely). -->
+                                             MainViewModel.MergeSelectedCommand) o para borrarlo en
+                                             conjunto (FEATURE 4, 2026-07-17, ver
+                                             MainViewModel.DeleteMarkedCommand) — mismo marcado para
+                                             las dos acciones de la barra de abajo. Ya NO exige estar
+                                             sincronizada para poder marcarse: antes el borrado en
+                                             conjunto no existía y todo marcado terminaba en "Unir",
+                                             que sí necesita ids remotos, así que el checkbox se
+                                             bloqueaba temprano (IsEnabled=IsSyncedRemotely). Ahora
+                                             "Unir (N)" sigue validando sync al ejecutar (ver
+                                             MainViewModel.MergeSelected, avisa en vez de romper si
+                                             alguna marcada no sincronizó) y "Borrar (N)" no lo necesita
+                                             en absoluto. -->
                                         <CheckBox VerticalAlignment="Center" Margin="0,0,4,0"
                                                   IsChecked="{Binding IsMarkedForMerge, Mode=TwoWay}"
-                                                  IsEnabled="{Binding IsSyncedRemotely}"
                                                   Visibility="{Binding DataContext.IsMergeModeActive, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}"
-                                                  ToolTip="Elegir para unir con otras notas (necesita estar sincronizada)"
-                                                  AutomationProperties.Name="Elegir para unir"/>
+                                                  ToolTip="Elegir para unir o para borrar en conjunto"
+                                                  AutomationProperties.Name="Elegir para unir o borrar"/>
                                         <TextBlock Text="{Binding StatusGlyph}" Width="18" FontSize="12"
                                                    VerticalAlignment="Center">
                                             <TextBlock.Style>
@@ -429,18 +445,29 @@
                     </TreeView>
                     </Grid>
 
-                    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel Margin="0,12,0,0">
+                    <!-- Bloque de acciones (Variante A del rediseño, 2026-07-17): antes vivía
+                         dentro de un ScrollViewer propio (Grid.Row="3" con Height="*"), compitiendo
+                         por alto con el árbol de la Row 2 y mostrando dos scrollbars a la vez — ver
+                         el comentario largo en la RowDefinition de esta fila (arriba). Ahora es un
+                         StackPanel de alto natural: mide lo que necesite y el árbol de arriba queda
+                         como la única zona con scroll del panel. Reordenado en secciones con
+                         {StaticResource SectionLabel} (IMPORTAR / GRABAR / AJUSTES AVANZADOS, mismo
+                         estilo que ya usa MergeNotesWindow) — puramente visual: todos los bindings,
+                         comandos, visibilidades y tooltips de cada control son EXACTAMENTE los
+                         mismos que tenía antes, solo cambió el orden y el envoltorio. -->
+                    <StackPanel Grid.Row="3" Margin="0,12,0,0">
                         <!-- "Unir notas" (modo explícito, rediseño 2026-07-14): esta barra es TODO el
                              modo unir mientras está activo (ver MainViewModel.IsMergeModeActive):
                              instrucción explícita de qué hacer, cuántas notas hay elegidas hasta ahora,
-                             y las dos únicas acciones (confirmar o salir). Ya no depende de
-                             MarkedForMergeCount para mostrarse: aparece apenas se entra al modo (botón
-                             "Unir notas" de arriba), incluso con 0 elegidas todavía, así el usuario ve
-                             la instrucción ANTES de tocar el primer checkbox. "Unir (N)" queda
-                             deshabilitado hasta el mínimo de 2 (ver
-                             AiMergeClient.MinNoteCount/CanMergeNoteCount, vía CanMergeSelected). -->
+                             y las acciones disponibles (unir, borrar en conjunto, o salir). Ya no
+                             depende de MarkedForMergeCount para mostrarse: aparece apenas se entra al
+                             modo (botón "Unir notas" de arriba), incluso con 0 elegidas todavía, así el
+                             usuario ve la instrucción ANTES de tocar el primer checkbox. "Unir (N)"
+                             queda deshabilitado hasta el mínimo de 2 (ver
+                             AiMergeClient.MinNoteCount/CanMergeNoteCount, vía CanMergeSelected).
+                             "Borrar (N)" (FEATURE 4, 2026-07-17) reusa el mismo marcado que "Unir",
+                             pero sin exigir mínimo ni sincronización — ver
+                             MainViewModel.DeleteMarkedCommand. -->
                         <Border Background="{DynamicResource AccentSoft}" CornerRadius="8" Padding="10,8" Margin="0,0,0,10"
                                 Visibility="{Binding IsMergeModeActive, Converter={StaticResource BoolToVisibility}}">
                             <StackPanel>
@@ -455,11 +482,22 @@
                                             Style="{StaticResource PrimaryButton}"
                                             Padding="12,6" FontSize="12" Margin="0,0,6,0"
                                             Command="{Binding MergeSelectedCommand}"/>
+                                    <Button Content="{Binding MarkedForMergeCount, StringFormat='Borrar ({0})'}"
+                                            Style="{StaticResource DangerButton}"
+                                            Padding="12,6" FontSize="12" Margin="0,0,6,0"
+                                            Command="{Binding DeleteMarkedCommand}"
+                                            ToolTip="Borra los audios marcados (van a la papelera)."
+                                            AutomationProperties.Name="Borrar los audios marcados"/>
                                     <Button Content="Cancelar" Style="{StaticResource SecondaryButton}"
                                             Padding="12,6" FontSize="12" Command="{Binding ClearMergeSelectionCommand}"/>
                                 </StackPanel>
                             </StackPanel>
                         </Border>
+
+                        <!-- Divisor (Variante A, 2026-07-17): separa la zona de selección/árbol de
+                             la zona de acciones de abajo. Puramente decorativo y SIEMPRE visible (a
+                             diferencia de la barra de arriba, no depende de IsMergeModeActive). -->
+                        <Border Height="1" Background="{DynamicResource Border}" Margin="0,0,0,14"/>
 
                         <!-- Destino explícito (rediseño 2026-07-14, paridad con "Proyecto destino"
                              de la web): a qué proyecto van a caer los audios que agregues, grabes o
@@ -471,20 +509,21 @@
                              del reporte "Va a: New test"). Sin emoji (pedido del dueño): borde de
                              acento a la izquierda en vez de ícono, mismo lenguaje visual que la franja
                              "Peacock" del header. -->
-                        <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="8" Padding="10,7" Margin="0,0,0,10"
+                        <Border Background="{DynamicResource SurfaceAlt}" CornerRadius="8" Padding="10,7" Margin="0,0,0,16"
                                 BorderBrush="{DynamicResource Accent}" BorderThickness="3,0,0,0">
                             <TextBlock Text="{Binding AddDestinationLabel}" FontSize="12" FontWeight="SemiBold"
                                        TextTrimming="CharacterEllipsis"
                                        Foreground="{DynamicResource TextPrimary}"/>
                         </Border>
 
-                        <!-- Paso 1: cargar audio (archivo o grabación) -->
+                        <!-- ===== IMPORTAR ===== -->
+                        <TextBlock Text="IMPORTAR" Style="{StaticResource SectionLabel}" Margin="2,0,0,8"/>
                         <Border Background="{DynamicResource AccentSoft}" CornerRadius="8" Padding="10,8" Margin="0,0,0,6">
                             <TextBlock HorizontalAlignment="Center" FontSize="12" TextAlignment="Center"
                                        Foreground="{DynamicResource AccentText}"
                                        Text="Arrastrá audios aquí"/>
                         </Border>
-                        <Button Content="Cargar archivo(s)" Style="{StaticResource SecondaryButton}" Margin="0,0,0,10"
+                        <Button Content="Cargar archivo(s)" Style="{StaticResource SecondaryButton}" Margin="0,0,0,16"
                                 Command="{Binding AddFilesCommand}"
                                 ToolTip="Elegí uno o más audios desde el Explorador (alternativa a arrastrarlos)."/>
 
@@ -505,6 +544,8 @@
                                          BorderThickness="0"/>
                         </Grid>
 
+                        <!-- ===== GRABAR ===== -->
+                        <TextBlock Text="GRABAR" Style="{StaticResource SectionLabel}" Margin="2,0,0,8"/>
                         <!-- Labels que se oponen sin necesitar hover (A.5, DESIGN-REVIEW-2026-07-16.md):
                              antes los dos botones decían "Grabar audio"/"Grabar reunión" y lo único
                              que distinguía "graba solo tu voz" de "graba también lo que suena en tu
@@ -552,7 +593,7 @@
                              que acá no hace falta plomería nueva. Default false a propósito: activarlo
                              fuerza Engine="local" y lo persiste, migrando en silencio a un usuario que
                              venía usando Groq. -->
-                        <CheckBox Content="Identificar quién habla" Margin="0,0,0,10" FontSize="12"
+                        <CheckBox Content="Identificar quién habla" Margin="0,0,0,16" FontSize="12"
                                   IsChecked="{Binding UseDiarization}"
                                   Foreground="{DynamicResource TextSecondary}"
                                   Visibility="{Binding IsRecording, Converter={StaticResource InverseBoolToVisibility}}"
@@ -565,57 +606,63 @@
                                 Command="{Binding ToggleMeetingRecordingCommand}"
                                 Visibility="{Binding ShowStopMeetingButton, Converter={StaticResource BoolToVisibility}}"/>
 
-                        <!-- Paso 2: motor + estado del modelo local (bugfix 2026-07-14: separado
-                             de grabar/transcribir — ver MainViewModel, región "Descarga del
-                             modelo local", para el diagnóstico completo). Antes el motor solo se
-                             elegía en Configuración, invisible desde acá; ahora queda a la vista
-                             justo donde importa: al lado del botón que lo usa. -->
+                        <!-- ===== AJUSTES AVANZADOS ===== -->
+                        <TextBlock Text="AJUSTES AVANZADOS" Style="{StaticResource SectionLabel}" Margin="2,0,0,8"/>
+                        <!-- Motor + Modelo en un grid de 2 columnas (Variante A, 2026-07-17): antes
+                             eran dos Grid full-width apilados, uno por fila (bugfix 2026-07-14 y
+                             selector 2026-07-15 respectivamente — ver los comentarios de cada bloque
+                             más abajo para el porqué de cada condición). Acá SOLO cambió la
+                             disposición: uno al lado del otro, con un mini-label arriba de cada
+                             ComboBox en vez de una etiqueta "Motor:"/"Modelo:" a la izquierda.
+                             Ningún binding/condición se tocó. -->
                         <Grid Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="10"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Motor:" FontSize="11" VerticalAlignment="Center"
-                                       Foreground="{DynamicResource TextMuted}" Margin="0,0,6,0"/>
-                            <!-- IsEngineSelectable: false mientras "Identificar quién habla" está
-                                 activo (Configuración) — la nube no identifica hablantes, así que
-                                 el motor queda fijo en Local y el selector se bloquea acá, con un
-                                 tooltip que explica por qué (ShowOnDisabled, mismo patrón que el
-                                 botón Transcribir/TranscribeDisabledReason más abajo). -->
-                            <ComboBox Grid.Column="1" FontSize="12" SelectedValuePath="Tag"
-                                      SelectedValue="{Binding Engine}"
-                                      IsEnabled="{Binding IsEngineSelectable}"
-                                      ToolTipService.ShowOnDisabled="True"
-                                      ToolTip="{Binding EngineLockedReason}"
-                                      AutomationProperties.Name="Motor de transcripción">
-                                <ComboBoxItem Content="Local (tu PC, sin conexión)" Tag="local"/>
-                                <ComboBoxItem Content="Groq (nube, más rápido)" Tag="groq"/>
-                            </ComboBox>
-                        </Grid>
 
-                        <!-- Calidad del modelo Local (2026-07-15) — SOLO visible con ese motor: la
-                             nube tiene su propio selector de calidad (GroqModel, en Configuración).
-                             Antes el motor Local usaba siempre el modelo más chico de Whisper, sin
-                             forma de elegir otro; ver LocalModelOptions (Core) para el catálogo y
-                             MainViewModel.OnLocalModelIdChanged para qué pasa al cambiarlo.
-                             Deshabilitado mientras IsBusy: cambiarlo en medio de una transcripción
-                             soltaría el modelo que ese trabajo todavía está usando en otro hilo. -->
-                        <Grid Margin="0,0,0,6" Visibility="{Binding IsGroq, Converter={StaticResource InverseBoolToVisibility}}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Modelo:" FontSize="11" VerticalAlignment="Center"
-                                       Foreground="{DynamicResource TextMuted}" Margin="0,0,6,0"/>
-                            <ComboBox Grid.Column="1" FontSize="12" SelectedValuePath="Tag"
-                                      SelectedValue="{Binding LocalModelId}"
-                                      IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolean}}"
-                                      ToolTip="Un modelo más grande transcribe mejor el español, pero tarda más y pesa más para descargar."
-                                      AutomationProperties.Name="Modelo local de Whisper">
-                                <ComboBoxItem Content="Rápido (167 MB)" Tag="small"/>
-                                <ComboBoxItem Content="Bueno (514 MB)" Tag="medium"/>
-                                <ComboBoxItem Content="El mejor (1 GB)" Tag="large-v3"/>
-                            </ComboBox>
+                            <!-- Motor: bugfix 2026-07-14, separado de grabar/transcribir (ver
+                                 MainViewModel, región "Descarga del modelo local", para el
+                                 diagnóstico completo). -->
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Motor" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="2,0,0,4"/>
+                                <!-- IsEngineSelectable: false mientras "Identificar quién habla" está
+                                     activo (Configuración) — la nube no identifica hablantes, así que
+                                     el motor queda fijo en Local y el selector se bloquea acá, con un
+                                     tooltip que explica por qué (ShowOnDisabled, mismo patrón que el
+                                     botón Transcribir/TranscribeDisabledReason más abajo). -->
+                                <ComboBox FontSize="12" SelectedValuePath="Tag"
+                                          SelectedValue="{Binding Engine}"
+                                          IsEnabled="{Binding IsEngineSelectable}"
+                                          ToolTipService.ShowOnDisabled="True"
+                                          ToolTip="{Binding EngineLockedReason}"
+                                          AutomationProperties.Name="Motor de transcripción">
+                                    <ComboBoxItem Content="Local (tu PC, sin conexión)" Tag="local"/>
+                                    <ComboBoxItem Content="Groq (nube, más rápido)" Tag="groq"/>
+                                </ComboBox>
+                            </StackPanel>
+
+                            <!-- Modelo: calidad del modelo Local (2026-07-15) — SOLO visible con ese
+                                 motor, la nube tiene su propio selector de calidad (GroqModel, en
+                                 Configuración). Antes el motor Local usaba siempre el modelo más
+                                 chico de Whisper, sin forma de elegir otro; ver LocalModelOptions
+                                 (Core) para el catálogo y MainViewModel.OnLocalModelIdChanged para
+                                 qué pasa al cambiarlo. Deshabilitado mientras IsBusy: cambiarlo en
+                                 medio de una transcripción soltaría el modelo que ese trabajo
+                                 todavía está usando en otro hilo. -->
+                            <StackPanel Grid.Column="2" Visibility="{Binding IsGroq, Converter={StaticResource InverseBoolToVisibility}}">
+                                <TextBlock Text="Modelo" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="2,0,0,4"/>
+                                <ComboBox FontSize="12" SelectedValuePath="Tag"
+                                          SelectedValue="{Binding LocalModelId}"
+                                          IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolean}}"
+                                          ToolTip="Un modelo más grande transcribe mejor el español, pero tarda más y pesa más para descargar."
+                                          AutomationProperties.Name="Modelo local de Whisper">
+                                    <ComboBoxItem Content="Rápido (167 MB)" Tag="small"/>
+                                    <ComboBoxItem Content="Bueno (514 MB)" Tag="medium"/>
+                                    <ComboBoxItem Content="El mejor (1 GB)" Tag="large-v3"/>
+                                </ComboBox>
+                            </StackPanel>
                         </Grid>
 
                         <!-- Aviso + botón de descarga: SOLO visible con motor Local y modelo
@@ -651,7 +698,6 @@
                             </StackPanel>
                         </Border>
                     </StackPanel>
-                    </ScrollViewer>
 
                     <!-- Paso 3: transcribir, en su propia fila fija (Row 4, ver A.2 arriba): el
                          tooltip muestra el motivo REAL por el que está apagado

@@ -32,6 +32,23 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _cts;
 
     /// <summary>
+    /// True mientras <see cref="TranscribeProjectAsync"/> está corriendo (FEATURE 2, 2026-07-17).
+    /// Evita un segundo click en "Transcribir" durante los huecos entre audios del lote, donde
+    /// <see cref="IsBusy"/> vuelve a false por un instante (cada audio maneja su propio IsBusy en
+    /// <see cref="TranscribeSelectedAudioAsync"/>, sin cambios de esa lógica — ver el comentario
+    /// largo de TranscribeProjectAsync).
+    /// </summary>
+    private bool _isBatchTranscribing;
+
+    /// <summary>
+    /// Se prende desde <see cref="Cancel"/> (botón "Cancelar") y lo lee <see cref="TranscribeProjectAsync"/>
+    /// para cortar el lote entre un audio y el siguiente — <see cref="_cts"/> ya se cancela y se
+    /// libera por cada audio individual (ver TranscribeSelectedAudioAsync), así que por sí solo no
+    /// alcanza para saber si había un lote en curso que además haya que frenar.
+    /// </summary>
+    private bool _batchCancelRequested;
+
+    /// <summary>
     /// Único punto de verdad sobre el modelo GGML local (Whisper) SELECCIONADO: existe/no existe en
     /// disco, y cómo descargarlo. Se comparte con <see cref="TranscriptionService"/> (reusado, no
     /// uno nuevo por sesión) y con <see cref="DownloadModelCommand"/>, que ahora es el ÚNICO camino
@@ -601,10 +618,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(EditProjectMetaCommand))]
     [NotifyCanExecuteChangedFor(nameof(RenameSelectedCommand))]
     [NotifyCanExecuteChangedFor(nameof(DeleteSelectedCommand))]
+    // FEATURE 2 (2026-07-17): CanTranscribe() ahora también depende de SelectedProject (batch-
+    // transcribir un proyecto sin audio puntual elegido, ver TranscribeProjectAsync) — sin esto,
+    // el botón "Transcribir" quedaba con el estado viejo hasta que ALGÚN otro evento no
+    // relacionado disparara un refresco del CanExecute.
+    [NotifyCanExecuteChangedFor(nameof(TranscribeCommand))]
     [NotifyPropertyChangedFor(nameof(SelectedProjectDescription))]
     [NotifyPropertyChangedFor(nameof(ShowProjectFilesView))]
     [NotifyPropertyChangedFor(nameof(ShowEmptyPlaceholder))]
     [NotifyPropertyChangedFor(nameof(AddDestinationLabel))]
+    [NotifyPropertyChangedFor(nameof(TranscribeDisabledReason))]
     private ProjectVm? _selectedProject;
 
     /// <summary>Descripción del proyecto seleccionado (para el encabezado).</summary>
@@ -1044,6 +1067,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     a.PropertyChanged += OnAudioPropertyChanged;
             OnPropertyChanged(nameof(MarkedForMergeCount));
             MergeSelectedCommand.NotifyCanExecuteChanged();
+            // FEATURE 4 (2026-07-17): mismo motivo que MergeSelectedCommand arriba — cada
+            // refresh reconstruye instancias nuevas de AudioItemVm, todas sin marcar.
+            DeleteMarkedCommand.NotifyCanExecuteChanged();
 
             // "Resurfacing" (ver región más abajo): recalculado sobre el árbol recién reconstruido.
             ComputeResurfaceCandidate();
@@ -1355,6 +1381,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         OnPropertyChanged(nameof(MarkedForMergeCount));
         MergeSelectedCommand.NotifyCanExecuteChanged();
+        // FEATURE 4 (2026-07-17): "Borrar (N)" reusa el mismo marcado — mismo refresco de
+        // CanExecute que MergeSelectedCommand, ver DeleteMarkedCommand más abajo.
+        DeleteMarkedCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>
@@ -1395,6 +1424,50 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // modo unir y limpiar el marcado local no le afecta, y deja la lista lista para la
         // próxima vez sin marcas viejas colgando.
         ClearMergeSelection();
+    }
+
+    private bool CanDeleteMarked() => MarkedForMergeCount > 0;
+
+    /// <summary>
+    /// "Borrar (N)" (FEATURE 4, 2026-07-17): reusa el mismo marcado de "Unir notas"
+    /// (<see cref="AudioItemVm.IsMarkedForMerge"/>) para borrar TODOS los audios marcados de una,
+    /// con confirmación. A diferencia de "Unir (N)", funciona con CUALQUIER audio marcado: no
+    /// exige mínimo de 2 ni que estén sincronizados (el borrado no toca el backend, solo el disco
+    /// local — ver <see cref="Workspace.DeleteAudios"/>). Mismo destino que un borrado individual
+    /// (<see cref="DeleteAudio"/>): papelera, nunca permanente.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanDeleteMarked))]
+    private void DeleteMarked()
+    {
+        if (_workspace is null)
+            return;
+
+        var marked = Projects.SelectMany(p => p.Audios).Where(a => a.IsMarkedForMerge).ToList();
+        if (marked.Count == 0)
+            return;
+
+        if (!Confirm($"¿Borrar los {marked.Count} audios seleccionados? Van a la papelera."))
+            return;
+
+        try
+        {
+            _workspace.DeleteAudios(marked.Select(a => a.Model));
+            if (SelectedAudio is not null && marked.Contains(SelectedAudio))
+                SelectedAudio = null;
+            IsMergeModeActive = false;
+            StatusMessage = $"Se borraron {marked.Count} audio(s).";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"No se pudo borrar: {ex.Message}";
+        }
+        finally
+        {
+            // Siempre, incluso ante un fallo a mitad de camino (algún audio sí se movió a
+            // .papelera/ antes de que otro tirara): el árbol tiene que reflejar lo que
+            // efectivamente quedó en disco, no lo que se INTENTÓ borrar.
+            RefreshAudios();
+        }
     }
 
     // ---- Resurfacing (nota vieja sugerida, 100% local -- ver ResurfaceCandidatePicker) -----------
@@ -1669,26 +1742,130 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     // ---- Transcribir ----------------------------------------------------
 
+    // FEATURE 2 (2026-07-17): con un PROYECTO seleccionado (sin audio puntual) y al menos un
+    // audio sin transcribir, "Transcribir" pasa a transcribir el proyecto ENTERO, uno por uno —
+    // ver TranscribeProjectAsync más abajo. Mira los mismos AudioItemVm.HasAudio/HasTranscript
+    // que ya usa el árbol, vía BatchTranscribePlanner (Core, testeable sin UI).
+    private static bool HasPendingProjectAudios(ProjectVm project) =>
+        project.Audios.Any(a => BatchTranscribePlanner.IsPending(new BatchTranscribeAudioStatus(a.HasAudio, a.HasTranscript)));
+
     // SelectedAudio is { HasAudio: true } (en vez de "is not null"): una transcripción SOLO TEXTO
     // (ver AudioItemVm.HasAudio) ya tiene su texto -- no hay archivo de audio real que transcribir.
     // (IsGroq || IsLocalModelAvailable): con el motor Local, el botón queda deshabilitado hasta
     // que el modelo ya esté descargado -- ver la región "Descarga del modelo local" más arriba
-    // para el diagnóstico completo del bug que esto resuelve.
+    // para el diagnóstico completo del bug que esto resuelve. La rama de proyecto (SelectedAudio
+    // null + SelectedProject con pendientes) es FEATURE 2 -- ver HasPendingProjectAudios arriba y
+    // TranscribeProjectAsync más abajo. _isBatchTranscribing bloquea un segundo click mientras un
+    // lote ya está corriendo (IsBusy solo, un solo Audio del lote, no del lote completo).
     private bool CanTranscribe() =>
-        !IsBusy && !IsRecording && SelectedAudio is { HasAudio: true } && (IsGroq || IsLocalModelAvailable);
+        !IsBusy && !IsRecording && !_isBatchTranscribing && (IsGroq || IsLocalModelAvailable) &&
+        (SelectedAudio is { HasAudio: true }
+            || (SelectedAudio is null && SelectedProject is not null && HasPendingProjectAudios(SelectedProject)));
 
     /// <summary>
     /// Motivo REAL por el que "Transcribir" está apagado (o null si está prendido). Espeja
     /// exactamente las condiciones de <see cref="CanTranscribe"/>, priorizando el bloqueo más
     /// barato de resolver — ver TranscribeGateFormatter para el bug que esto arregla (el tooltip
     /// era un string fijo que culpaba al modelo local aunque el bloqueo real fuese otro, y mandó a
-    /// una usuaria a descargar 1,5 GB al pedo).
+    /// una usuaria a descargar 1,5 GB al pedo). <c>hasPendingProjectAudios</c> (FEATURE 2) evita
+    /// que este tooltip diga "Elegí un audio" con un proyecto batch-transcribible ya elegido.
     /// </summary>
     public string? TranscribeDisabledReason => TranscribeGateFormatter.DisabledReason(
-        IsBusy, IsRecording, SelectedAudio is { HasAudio: true }, IsGroq, IsLocalModelAvailable);
+        IsBusy || _isBatchTranscribing, IsRecording, SelectedAudio is { HasAudio: true }, IsGroq, IsLocalModelAvailable,
+        hasPendingProjectAudios: SelectedAudio is null && SelectedProject is not null && HasPendingProjectAudios(SelectedProject));
 
+    /// <summary>
+    /// Punto de entrada de "Transcribir" (botón/comando): despacha a transcripción de UN audio
+    /// (comportamiento de siempre, <see cref="TranscribeSelectedAudioAsync"/>) o de un PROYECTO
+    /// entero (FEATURE 2, 2026-07-17, <see cref="TranscribeProjectAsync"/>) según qué haya
+    /// seleccionado — ver <see cref="CanTranscribe"/> arriba para las condiciones exactas de cada
+    /// rama. Sigue siendo el método que invoca <c>StopRecordingAsync</c> directo tras grabar
+    /// (SelectedAudio siempre no-null en ese camino, así que siempre cae en la rama de un audio).
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanTranscribe))]
     private async Task TranscribeAsync()
+    {
+        if (SelectedAudio is null && SelectedProject is not null)
+        {
+            await TranscribeProjectAsync(SelectedProject);
+            return;
+        }
+
+        await TranscribeSelectedAudioAsync();
+    }
+
+    /// <summary>
+    /// Transcribe todos los audios sin transcribir de <paramref name="project"/>, uno por uno
+    /// (FEATURE 2, 2026-07-17, brief 1.0.52). Pide confirmación antes de arrancar y reusa el MISMO
+    /// camino que la transcripción de un solo audio (<see cref="TranscribeSelectedAudioAsync"/>),
+    /// seteando <see cref="SelectedAudio"/> y esperando cada llamada de a una -- TranscribeAsync
+    /// coordina con SyncCoordinator (zona sensible) y loopear await secuencial es lo seguro, sin
+    /// tocar nada de su lógica interna. Si un audio falla sigue con el resto y avisa al final
+    /// cuántos salieron mal (ver <see cref="BatchTranscribePlanner.SummaryMessage"/>).
+    ///
+    /// Riesgo conocido y aceptado: cada iteración pasa por <see cref="SelectedAudio"/> (la misma
+    /// propiedad que toca un click del usuario en el árbol), así que seleccionar OTRO nodo a mano
+    /// mientras el lote corre puede pisar la selección de la iteración en curso. Es el trade-off
+    /// que el propio brief pide ("reusar el mismo camino... es lo seguro") a cambio de no tocar
+    /// TranscribeSelectedAudioAsync/SyncCoordinator.
+    /// </summary>
+    private async Task TranscribeProjectAsync(ProjectVm project)
+    {
+        if (_workspace is null)
+            return;
+
+        // Mismo predicado que HasPendingProjectAudios (arriba, usado por CanTranscribe): una sola
+        // fuente de verdad de "qué cuenta como pendiente" en vez de repetir la condición a mano.
+        var pending = project.Audios
+            .Where(a => BatchTranscribePlanner.IsPending(new BatchTranscribeAudioStatus(a.HasAudio, a.HasTranscript)))
+            .ToList();
+        if (pending.Count == 0)
+            return; // CanTranscribe ya lo filtra; defensa en profundidad.
+
+        if (!Confirm(BatchTranscribePlanner.ConfirmMessage(project.Title, pending.Count)))
+            return;
+
+        _batchCancelRequested = false;
+        _isBatchTranscribing = true;
+        TranscribeCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(TranscribeDisabledReason));
+
+        int attempted = 0, failures = 0;
+        try
+        {
+            for (var i = 0; i < pending.Count; i++)
+            {
+                var audio = pending[i];
+                if (audio.HasTranscript)
+                    continue; // ya se transcribió por otro medio mientras esperaba su turno.
+
+                attempted++;
+                StatusMessage = BatchTranscribePlanner.ProgressMessage(i + 1, pending.Count);
+                SelectedAudio = audio;
+                await TranscribeSelectedAudioAsync();
+
+                if (!audio.HasTranscript)
+                    failures++;
+
+                if (_batchCancelRequested)
+                    break;
+            }
+        }
+        finally
+        {
+            SelectedAudio = null; // vuelve a la vista de proyecto (ShowProjectFilesView).
+            _isBatchTranscribing = false;
+            TranscribeCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(TranscribeDisabledReason));
+        }
+
+        StatusMessage = _batchCancelRequested
+            ? BatchTranscribePlanner.CancelledMessage(attempted, pending.Count, failures)
+            : BatchTranscribePlanner.SummaryMessage(pending.Count, failures);
+    }
+
+    /// <summary>Transcribe UN audio: <see cref="SelectedAudio"/> (comportamiento de siempre, sin cambios de lógica — ver FEATURE 2 arriba para el camino de lote).</summary>
+    private async Task TranscribeSelectedAudioAsync()
     {
         if (_workspace is null || SelectedAudio is null)
             return;
@@ -1931,8 +2108,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private bool CanCancel() => IsBusy;
 
+    /// <summary>
+    /// Cancela lo que esté corriendo. <see cref="_batchCancelRequested"/> (FEATURE 2, 2026-07-17)
+    /// solo importa mientras hay un lote de proyecto corriendo (ver TranscribeProjectAsync) — en
+    /// una transcripción de un solo audio queda prendido sin que nadie lo lea, y el próximo lote
+    /// lo reinicia a false apenas arranca.
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanCancel))]
-    private void Cancel() => _cts?.Cancel();
+    private void Cancel()
+    {
+        _batchCancelRequested = true;
+        _cts?.Cancel();
+    }
 
     // ---- Grabar audio desde el micrófono ---------------------------------
 

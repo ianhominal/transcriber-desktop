@@ -412,6 +412,18 @@ public sealed class Workspace
             File.Move(audio.TranscriptPath, Path.Combine(bucket, Path.GetFileName(audio.TranscriptPath)));
     }
 
+    /// <summary>
+    /// Borra una LISTA de audios de una (FEATURE 4, "Borrar seleccionados" — reusa los checkboxes
+    /// de "Unir notas", ver <c>MainViewModel.DeleteMarkedCommand</c>). Mismo destino que
+    /// <see cref="DeleteAudio"/> para cada uno (<c>.papelera/</c>, nunca borrado permanente) — a
+    /// diferencia de "Unir notas", acá no hace falta que los audios estén sincronizados.
+    /// </summary>
+    public void DeleteAudios(IEnumerable<AudioItem> audios)
+    {
+        foreach (var audio in audios)
+            DeleteAudio(audio);
+    }
+
     /// <summary>Borrado DEFINITIVO de un audio (sin pasar por la papelera). Acción explícita y separada: no la usa la UI por default.</summary>
     public void DeleteAudioPermanently(AudioItem audio)
     {

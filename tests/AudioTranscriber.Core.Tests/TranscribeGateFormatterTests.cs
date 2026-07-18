@@ -72,4 +72,38 @@ public class TranscribeGateFormatterTests
 
         Assert.Equal("Esperá a que termine lo que está corriendo.", reason);
     }
+
+    // ---- FEATURE 2 (2026-07-17): batch-transcribir un proyecto sin audio puntual seleccionado ----
+
+    [Fact]
+    public void ProjectWithPendingAudios_NoSingleAudioSelected_HasNoReason()
+    {
+        var reason = TranscribeGateFormatter.DisabledReason(
+            isBusy: false, isRecording: false, hasSelectedAudio: false, isGroq: true, isLocalModelAvailable: false,
+            hasPendingProjectAudios: true);
+
+        Assert.Null(reason);
+    }
+
+    [Fact]
+    public void ProjectWithPendingAudios_LocalEngineWithoutModel_AsksForTheModel()
+    {
+        var reason = TranscribeGateFormatter.DisabledReason(
+            isBusy: false, isRecording: false, hasSelectedAudio: false, isGroq: false, isLocalModelAvailable: false,
+            hasPendingProjectAudios: true);
+
+        Assert.Equal("Con el motor Local hace falta descargar el modelo primero (ver arriba).", reason);
+    }
+
+    /// Sin el nuevo parámetro (default false), el comportamiento viejo no cambia un carácter:
+    /// mismo mensaje que NoAudioSelected_AsksForAnAudio de arriba.
+    [Fact]
+    public void NoAudioAndNoPendingProjectAudios_StillAsksForAnAudio()
+    {
+        var reason = TranscribeGateFormatter.DisabledReason(
+            isBusy: false, isRecording: false, hasSelectedAudio: false, isGroq: true, isLocalModelAvailable: true,
+            hasPendingProjectAudios: false);
+
+        Assert.Equal("Elegí un audio de la lista para transcribir.", reason);
+    }
 }

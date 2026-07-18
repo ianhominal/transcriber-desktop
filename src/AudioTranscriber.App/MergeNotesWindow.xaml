@@ -3,8 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:AudioTranscriber.App.Controls"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="Unir notas — Audio Transcriber" Height="680" Width="600"
-        MinHeight="460" MinWidth="440"
+        Title="Unir notas — Audio Transcriber" Width="600"
+        MinHeight="460" MinWidth="440" MaxHeight="820"
+        SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
         Background="{DynamicResource Bg}" FontFamily="Segoe UI" FontSize="14"
         Foreground="{DynamicResource TextPrimary}">
@@ -66,9 +67,24 @@
                         <TextBlock Text="Instrucción (opcional)" Style="{StaticResource SectionLabel}" Margin="2,0,0,4"/>
                         <TextBlock Text="Ej. &quot;Armá una minuta con decisiones y próximos pasos&quot;."
                                    Style="{StaticResource CaptionText}" Margin="2,0,0,6"/>
+                        <!-- Multilínea (fix visual 1.0.52, 2026-07-17): antes era de una sola
+                             línea y la ventana (Height fijo) dejaba un hueco vacío grande abajo
+                             para una instrucción que casi siempre necesita más de un renglón (ej.
+                             "armá una minuta con decisiones y próximos pasos, separadas por
+                             sección"). VerticalContentAlignment="Top" pisa el Center que trae
+                             InputBox (pensado para campos de una línea): con AcceptsReturn, texto
+                             centrado verticalmente arranca en el medio del cuadro en vez de arriba,
+                             que se ve raro apenas se escribe la primera línea. MaxHeight
+                             (scroll propio) + el Window con SizeToContent="Height" (ver arriba) es
+                             lo que reemplaza el hueco en blanco: la ventana crece con el contenido
+                             en vez de reservar un alto fijo de sobra. -->
                         <TextBox Style="{StaticResource InputBox}"
                                  Text="{Binding Instruction, UpdateSourceTrigger=PropertyChanged}"
                                  IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolean}}"
+                                 AcceptsReturn="True" TextWrapping="Wrap"
+                                 VerticalContentAlignment="Top"
+                                 VerticalScrollBarVisibility="Auto"
+                                 MinHeight="100" MaxHeight="160"
                                  AutomationProperties.Name="Instrucción para unir las notas"/>
                     </StackPanel>
 
