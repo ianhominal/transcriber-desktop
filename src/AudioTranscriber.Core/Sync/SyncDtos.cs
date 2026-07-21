@@ -205,4 +205,10 @@ public sealed class TranscriptionUpsert
     [JsonPropertyName("title")] public string? Title { get; set; }
     [JsonPropertyName("text")] public string? Text { get; set; }
     [JsonPropertyName("project_id")] public string? ProjectId { get; set; }
+
+    // NOT NULL en la tabla del server: sin esto el backend no puede CREAR la fila de una
+    // transcripción 100% LOCAL (motor Local, que nunca pasó por /api/transcribe/Groq) -- su push
+    // solo podía ACTUALIZAR una fila que no existía, y se perdía en silencio. Ver el endpoint
+    // /api/sync/push (repo web): con audio_name presente hace un upsert real (crea-o-actualiza).
+    [JsonPropertyName("audio_name")] public string? AudioName { get; set; }
 }

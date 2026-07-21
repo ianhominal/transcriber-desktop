@@ -921,6 +921,103 @@ public class SyncEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_TranscripcionLocalDespuesDeCicloSalteadoPorMotorLocal_SePusheaEnElSiguienteCiclo()
+    {
+        // Reproduce el bug real reportado (2026-07-21, sync serio): con motor Local
+        // (autoUploadUntranscribed:false), un audio SIN transcripción local se "saltea" en
+        // ExecutePushTranscriptionUpsertAsync (return sin excepción) y la baseline se ancla igual
+        // (local=hash-sin-texto, remote=''). Cuando el usuario transcribe local DESPUÉS, el
+        // próximo ciclo DEBE detectar el cambio local (el hash ahora incluye el texto) y pushear
+        // la transcripción -- si esto no pasa, queda huérfana en el desktop para siempre (nunca
+        // llega al servidor, aunque HasLocalTranscript ya sea true).
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "nueva.mp3"), "audio-bytes");
+
+        var apiHandler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, apiHandler);
+
+        // Ciclo 1: motor Local, todavía sin transcripción local -> se saltea el upload (bugfix
+        // 2026-07-21), la baseline se ancla igual. (El proyecto "Trabajo" en sí SÍ genera un POST
+        // de push -- es nuevo -- pero ese batch no debe incluir la transcripción sin texto.)
+        var first = await engine.RunAsync("token-123", autoUploadUntranscribed: false);
+        Assert.Equal(SyncOutcome.Completed, first.Outcome);
+        var firstPushIndex = apiHandler.Requests.FindIndex(r => r.Method == HttpMethod.Post);
+        if (firstPushIndex >= 0)
+            Assert.DoesNotContain("nueva.mp3", apiHandler.Bodies[firstPushIndex]);
+
+        // El usuario transcribe local (36 min después, en el escenario real reportado).
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Trabajo"));
+        File.WriteAllText(ws.TranscriptPathFor("nueva.mp3", "Trabajo"), "transcripcion local completa");
+
+        // Ciclo 2: sigue en motor Local -- ahora SÍ hay texto local, así que debe pushear el TEXTO
+        // (no un audio) al servidor. Se marca el corte de requests ANTES de este ciclo para no
+        // confundir el push del ciclo 1 (proyecto nuevo) con el de este ciclo.
+        var requestsBeforeCycle2 = apiHandler.Requests.Count;
+        var second = await engine.RunAsync("token-123", autoUploadUntranscribed: false);
+
+        Assert.Equal(SyncOutcome.Completed, second.Outcome);
+        var pushRequestIndex = apiHandler.Requests.FindIndex(requestsBeforeCycle2, r => r.Method == HttpMethod.Post);
+        Assert.True(pushRequestIndex >= 0, "Se esperaba un POST de push con la transcripción, pero no se mandó ninguno.");
+        Assert.Contains("transcripcion local completa", apiHandler.Bodies[pushRequestIndex]);
+    }
+
+    // ---- Causa raíz real del bug de sync (2026-07-21): un ítem rechazado por el servidor queda
+    // "falsamente sincronizado" -----------------------------------------------------------------
+    // RunAsync construye newBaseline (BuildBaselineEntry, ANCLANDO el ítem como "sincronizado")
+    // ANTES de conocer la respuesta del push (_api.PushAsync se llama DESPUÉS). El único mecanismo
+    // que revierte algo tras conocer la respuesta es ResolveCascadeDeleteRejections, y SOLO
+    // reacciona al patrón exacto de "borrado en cascada de proyecto" -- cualquier OTRO error en
+    // errors[] (transcripción rechazada, project_id inexistente, fila que el backend simplemente
+    // no encontró para actualizar, etc.) queda sin manejar: newBaseline YA tiene el ítem anclado
+    // como éxito y nada lo revierte. Resultado: el ítem se guarda como "sincronizado" en la
+    // baseline aunque el servidor lo haya rechazado -- exactamente la firma del bug real
+    // reportado (LastLocalHash seteado, LastRemoteHash='' para siempre, sin reintentar nunca más).
+
+    [Fact]
+    public async Task RunAsync_PushDeTranscripcionRechazadoPorElServidor_NoAnclaLaBaselineComoSincronizada()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "nueva.mp3"), "audio-bytes");
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Trabajo"));
+        File.WriteAllText(ws.TranscriptPathFor("nueva.mp3", "Trabajo"), "transcripcion local completa");
+
+        var scanner = new LocalScanner();
+        var snapshot = scanner.ScanDetailed(_root);
+        var transcriptionId = snapshot.Transcriptions.Values.Single().Id;
+
+        // El backend responde 200 OK (como documenta PushResponse: SIEMPRE 200, "ok" es solo
+        // errors.length === 0) pero con un error NO relacionado al patrón de borrado en cascada --
+        // p.ej. el caso real confirmado en el backend web (api/sync/push/route.ts): un UPDATE sobre
+        // un id que todavía no existe server-side no afecta ninguna fila, pero acá simulamos el
+        // caso en que el backend SÍ reporta el rechazo explícitamente en errors[].
+        var pushErrorJson = $$"""
+            {"serverTime":"2026-07-21T00:00:00Z","ok":false,"errors":["Transcripción {{transcriptionId}}: no se pudo actualizar (no existe)."]}
+            """;
+        var apiHandler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json(pushErrorJson));
+        var engine = BuildEngine(_root, _dbPath, apiHandler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+
+        // El push SÍ se intentó (el bucket incluía la transcripción)...
+        var pushRequestIndex = apiHandler.Requests.FindIndex(r => r.Method == HttpMethod.Post);
+        Assert.True(pushRequestIndex >= 0);
+        Assert.Contains("transcripcion local completa", apiHandler.Bodies[pushRequestIndex]);
+
+        // ...pero el servidor lo rechazó -- la baseline NO debe anclar este id como sincronizado.
+        // Si queda anclada (bug real), el próximo ciclo nunca lo vuelve a intentar: la transcripción
+        // queda invisible en el servidor para siempre pese a existir localmente con texto.
+        var index = new SyncIndex(_dbPath);
+        var newBaseline = index.LoadBaseline();
+        Assert.False(
+            newBaseline.ContainsKey(transcriptionId),
+            "La transcripción quedó anclada como sincronizada pese a que el servidor rechazó el push -- se va a perder para siempre.");
+    }
+
+    [Fact]
     public async Task RunAsync_AutoUploadUntranscribedTrue_SubeAudioSinTranscripcionLocal()
     {
         var ws = Workspace.OpenOrCreate(_root);

@@ -297,8 +297,8 @@ public sealed class SyncEngine
                 Transcriptions = HasContent(pushTranscriptions) ? pushTranscriptions : null,
             };
             var pushResponse = await _api.PushAsync(accessToken, request, ct);
-            cascadeDeleteWarning = ResolveCascadeDeleteRejections(
-                pushResponse, pushProjects, baseline, newBaseline, localSnapshot);
+            cascadeDeleteWarning = ReconcilePushResponse(
+                pushResponse, pushProjects, pushTranscriptions, baseline, newBaseline, localSnapshot);
         }
 
         await Task.Run(() => _index.SaveBaseline(newBaseline), ct);
@@ -337,29 +337,49 @@ public sealed class SyncEngine
     }
 
     /// <summary>
-    /// Reacciona a los rechazos de borrado-en-cascada (bug C1, ver <see cref="PushErrorHandling"/>)
-    /// que hayan venido en <c>errors[]</c> de la respuesta del push. El resto de errores del batch
-    /// (proyecto inválido, error SQL, etc.) NO se toca acá: siguen el comportamiento de reintento
-    /// normal que ya tiene el resto del sync (el ítem sigue "dirty" porque nada revierte su entrada
-    /// en <paramref name="newBaseline"/>, así que el próximo ciclo lo vuelve a intentar).
+    /// Reconcilia <c>newBaseline</c> contra la respuesta REAL del push (bugfix 2026-07-21, sync
+    /// serio -- ítem "falsamente sincronizado"). <c>newBaseline</c> se construye ANTES de conocer
+    /// esta respuesta (ver <see cref="RunAsync"/>: <see cref="BuildBaselineEntry"/> corre sobre
+    /// <c>successfulActions</c> antes de que <see cref="_api"/>.PushAsync siquiera se llame), así
+    /// que sin esta reconciliación un ítem rechazado (o simplemente no persistido -- p.ej. el
+    /// backend intenta un UPDATE sobre un id que todavía no existe del lado servidor y no reporta
+    /// ninguna fila afectada) quedaba anclado como "sincronizado" PARA SIEMPRE: el hash local ya
+    /// coincidía con la baseline, así que <see cref="SyncPlanner"/> nunca lo volvía a proponer.
+    /// Causa raíz real confirmada (ver changelog): para una transcripción 100% local (motor Local,
+    /// nunca pasó por <c>/api/transcribe</c>) el servidor NO tiene fila que actualizar, y
+    /// <c>api/sync/push/route.ts</c> hace un UPDATE (no un upsert) que no reporta error si no
+    /// afecta ninguna fila -- <c>errors[]</c> queda vacío y el cliente cree que salió bien.
     /// <para/>
-    /// Para un proyecto rechazado: el desktop ya lo movió a `.papelera` local de forma optimista
-    /// (<see cref="ExecutePushProjectDelete"/>, ANTES de conocer el resultado del push), pero el
-    /// servidor NO lo borró. Dejar <paramref name="newBaseline"/> marcando "borrado" sería mentira
-    /// (el proyecto sigue vivo en la nube con sus datos) y además dispararía una resurrección rara
-    /// vía PullUpsert en el próximo ciclo (el remoto seguiría "cambiado" contra esa baseline
-    /// incorrecta). Se revierte la entrada al valor que tenía ANTES de este ciclo (o se la saca si
-    /// no existía), dejando el ítem resuelto como "necesita acción manual" en vez de dirty/pendiente
-    /// para siempre -- ya no se vuelve a intentar el mismo borrado cada ciclo.
+    /// Dos niveles de reacción:
+    /// <list type="bullet">
+    /// <item>Rechazo de borrado-en-cascada de un proyecto (bug C1, patrón EXACTO, ver
+    /// <see cref="PushErrorHandling"/>): se revierte SOLO ese proyecto, con un aviso específico
+    /// (el desktop ya lo movió a <c>.papelera</c> local de forma optimista, ver
+    /// <see cref="ExecutePushProjectDelete"/>, pero el servidor no lo borró -- dejarlo "borrado" en
+    /// la baseline mentiría y dispararía una resurrección rara vía PullUpsert el próximo ciclo).
+    /// </item>
+    /// <item>CUALQUIER otro error sin resolver en <c>errors[]</c> (proyecto inválido, error SQL,
+    /// transcripción rechazada, fila inexistente, etc.): como el contrato no tiene forma de
+    /// correlacionar un error de texto plano con UN ítem del batch (ver comentario de cabecera de
+    /// <see cref="PushResponse"/>), se revierte TODO el batch de este ciclo (proyectos y
+    /// transcripciones, upserts y deletes) que no haya sido ya resuelto arriba -- conservador a
+    /// propósito: preferible reintentar de más (idempotente, solo tráfico extra) que dar por
+    /// sincronizado un ítem que el servidor rechazó o ignoró en silencio.</item>
+    /// </list>
     /// </summary>
-    private static string? ResolveCascadeDeleteRejections(
+    private static string? ReconcilePushResponse(
         PushResponse pushResponse,
         PushBucket<ProjectUpsert> pushProjects,
+        PushBucket<TranscriptionUpsert> pushTranscriptions,
         IReadOnlyDictionary<string, SyncBaselineItem> originalBaseline,
         Dictionary<string, SyncBaselineItem> newBaseline,
         LocalSnapshot localSnapshot)
     {
+        if (pushResponse.Errors.Count == 0)
+            return null;
+
         List<string>? warnings = null;
+        var resolvedErrorCount = 0;
 
         foreach (var error in pushResponse.Errors)
         {
@@ -369,10 +389,8 @@ public sealed class SyncEngine
             if (!pushProjects.Deletes.Contains(rejection.ProjectId))
                 continue; // defensivo: no tocar nada que este ciclo no haya intentado borrar
 
-            if (originalBaseline.TryGetValue(rejection.ProjectId, out var original))
-                newBaseline[rejection.ProjectId] = original;
-            else
-                newBaseline.Remove(rejection.ProjectId);
+            resolvedErrorCount++;
+            RevertBaselineEntry(rejection.ProjectId, originalBaseline, newBaseline);
 
             var displayName = localSnapshot.Projects.TryGetValue(rejection.ProjectId, out var project)
                 ? project.Name
@@ -382,7 +400,35 @@ public sealed class SyncEngine
                 $"El proyecto '{displayName}' tiene subcarpetas en la nube; borralo desde la web.");
         }
 
+        // Cualquier error que no haya matcheado el patrón de arriba deja el resto del batch de
+        // este ciclo como "no confirmado" -- se revierte, no se da por sincronizado a ciegas.
+        if (resolvedErrorCount < pushResponse.Errors.Count)
+        {
+            foreach (var id in pushProjects.Upserts.Select(p => p.Id).Concat(pushProjects.Deletes).Distinct())
+                RevertBaselineEntry(id, originalBaseline, newBaseline);
+
+            foreach (var id in pushTranscriptions.Upserts.Select(t => t.Id).Concat(pushTranscriptions.Deletes).Distinct())
+                RevertBaselineEntry(id, originalBaseline, newBaseline);
+        }
+
         return warnings is null ? null : string.Join(" ", warnings);
+    }
+
+    /// <summary>
+    /// Revierte la entrada de <paramref name="newBaseline"/> para <paramref name="id"/> al valor
+    /// que tenía en <paramref name="originalBaseline"/> (la baseline ANTES de este ciclo), o la
+    /// saca por completo si el ítem era nuevo este ciclo -- en ambos casos, deja de estar marcado
+    /// como "sincronizado", así <see cref="SyncPlanner"/> lo vuelve a proponer el próximo ciclo.
+    /// </summary>
+    private static void RevertBaselineEntry(
+        string id,
+        IReadOnlyDictionary<string, SyncBaselineItem> originalBaseline,
+        Dictionary<string, SyncBaselineItem> newBaseline)
+    {
+        if (originalBaseline.TryGetValue(id, out var original))
+            newBaseline[id] = original;
+        else
+            newBaseline.Remove(id);
     }
 
     /// <summary>
@@ -493,6 +539,10 @@ public sealed class SyncEngine
             Id = entry.Id,
             Text = entry.Text,
             ProjectId = entry.ProjectId,
+            // audio_name: sin esto el backend no puede CREAR la fila de una transcripción 100%
+            // local (solo actualizar una que no existe -> se perdía en silencio). Ver
+            // TranscriptionUpsert y /api/sync/push.
+            AudioName = entry.AudioFileName,
         });
     }
 

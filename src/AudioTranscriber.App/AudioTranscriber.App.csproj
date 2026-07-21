@@ -69,7 +69,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>appicon.ico</ApplicationIcon>
     <AssemblyName>AudioTranscriber</AssemblyName>
-    <Version>1.0.54</Version>
+    <Version>1.0.55</Version>
     <StartupObject>AudioTranscriber.App.App</StartupObject>
   </PropertyGroup>
 
