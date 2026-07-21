@@ -400,6 +400,84 @@ public class SyncEngineTests : IDisposable
         Assert.Equal("remote-t1", transcription.Id);
     }
 
+    // ---- Bug real reportado 2026-07-21: el sync pisa el audio ORIGINAL local con el comprimido
+    // de la nube -------------------------------------------------------------------------------
+    // El usuario arrastra un WAV de ~20MB; el sync lo sube comprimido (opus, ~2MB) a la nube para
+    // que Groq lo transcriba. Hasta acá todo bien -- pero en el siguiente pull, el backend manda
+    // audio_url_signed apuntando a ESE MISMO comprimido, y DownloadAudioBestEffortAsync lo bajaba
+    // y pisaba (File.Move overwrite:true) el WAV original de 20MB con la copia de ~2MB: pérdida de
+    // calidad irreversible. Fix: si YA hay un audio local en audioPath, es el original del usuario
+    // (mejor calidad que lo que guarda la nube) -- nunca se pisa. Solo se baja el comprimido cuando
+    // NO hay audio local (p.ej. un equipo nuevo pulleando todo de cero, ver el test de arriba
+    // RunAsync_PullUpsertConAudioUrlSigned_DescargaYGuardaElAudio, que sigue cubriendo ese caso).
+
+    [Fact]
+    public async Task RunAsync_PullUpsertConAudioLocalYaExistente_NoLoPisaConElComprimidoDeLaNube()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Personal");
+
+        // Audio ORIGINAL del usuario ya presente en disco (simula el WAV de alta calidad que
+        // arrastró y que el sync ya sincronizó en un ciclo anterior).
+        var originalBytes = Encoding.UTF8.GetBytes("contenido-ORIGINAL-wav-alta-calidad-del-usuario");
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Personal"));
+        File.WriteAllText(ws.TranscriptPathFor("nota.mp3", "Personal"), "hola");
+        File.WriteAllBytes(ws.AudioPathFor("nota.mp3", "Personal"), originalBytes);
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveIdMap(new Dictionary<string, string>
+        {
+            [LocalScanner.ProjectPathKey("Personal")] = "remote-personal",
+            [LocalScanner.TranscriptionPathKey("Personal", "nota.mp3")] = "remote-t1",
+        });
+
+        var scanner = new LocalScanner();
+        var initialScan = scanner.ScanDetailed(_root, index.LoadIdMap());
+        var projectId = initialScan.Projects.Values.Single().Id;
+        var transcriptionId = initialScan.Transcriptions.Values.Single().Id;
+
+        // Baseline "ya sincronizada" salvo por el remote hash: se fuerza distinto al que va a
+        // calcular el RemoteMapper para el pull de abajo (que SÍ trae audio_url_signed), así el
+        // planner detecta "cambio remoto" (audio_url_signed recién apareció) sin que el LOCAL
+        // también luzca cambiado -- un PullUpsert limpio, igual que
+        // RunAsync_AudioUrlSignedAppearsOnSecondPull_SelfHealsAndDownloadsAudio más arriba.
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [projectId] = AsBaseline(initialScan.Projects[projectId].State),
+            [transcriptionId] = AsBaseline(
+                initialScan.Transcriptions[transcriptionId].State,
+                remoteHash: "seed-hash-antes-de-que-exista-audio-en-la-nube"),
+        });
+
+        const string audioUrl = "https://storage.example.com/signed/nota.mp3?token=abc123";
+        var compressedBytes = Encoding.UTF8.GetBytes("comprimido-opus-de-la-nube-mucha-menor-calidad");
+        var pullJson = $$"""
+            {"serverTime":"2026-07-21T00:00:00Z",
+             "projects":[{"id":"remote-personal","name":"Personal","updated_at":"2026-07-06T00:00:00Z"}],
+             "transcriptions":[{"id":"remote-t1","project_id":"remote-personal","title":"Nota","audio_name":"nota.mp3","audio_url_signed":"{{audioUrl}}","text":"hola","updated_at":"2026-07-21T00:00:00Z"}]}
+            """;
+
+        var handler = new FakeHandler(req =>
+        {
+            if (req.RequestUri!.ToString() == audioUrl)
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(compressedBytes) };
+            return req.Method == HttpMethod.Get ? Json(pullJson) : Json("""{"ok":true}""");
+        });
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        // El PullUpsert de la transcripción efectivamente se ejecutó (para este id, no un duplicado).
+        Assert.Contains(result.Actions, a => a.Id == "remote-t1" && a.Type == SyncActionType.PullUpsert);
+
+        // EL AUDIO ORIGINAL NO SE TOCÓ: sigue teniendo los bytes de alta calidad del usuario, NO
+        // los del comprimido que mandó la nube.
+        var audioPath = ws.AudioPathFor("nota.mp3", "Personal");
+        Assert.Equal(originalBytes, await File.ReadAllBytesAsync(audioPath));
+        Assert.NotEqual(compressedBytes, await File.ReadAllBytesAsync(audioPath));
+    }
+
     // ---- Transcripciones SOLO TEXTO (bug: invisibles para siempre en desktop, 2026-07-08) ----
     // Causa raíz real (confirmada leyendo LocalScanner/Workspace): una transcripción remota sin
     // audio_url_signed YA se marcaba sincronizada (fix anterior, v1.0.11), pero LocalScanner
@@ -799,6 +877,67 @@ public class SyncEngineTests : IDisposable
 
         // Diagnóstico deja rastro del fallo.
         Assert.Contains(result.Diagnostics!, d => d.Contains(failId));
+    }
+
+    // ---- Bug real reportado 2026-07-21: no respetar el motor elegido (Local vs Groq) ----------
+    // ExecutePushTranscriptionUpsertAsync, para un audio SIN transcripción local, subía SIEMPRE el
+    // audio para que Groq lo transcriba server-side -- sin importar que el usuario tuviera elegido
+    // el motor Local (+ diarización). El usuario arrastraba audios queriendo transcribirlos local
+    // con diarización, y el auto-sync (cada 60s) se los transcribía con Groq (sin hablantes) antes
+    // de que pudiera. Fix: nuevo parámetro autoUploadUntranscribed (default true, motor Groq) --
+    // en false (motor Local), el audio sin transcripción local NO se sube: se espera a que el
+    // usuario lo transcriba local.
+
+    [Fact]
+    public async Task RunAsync_AutoUploadUntranscribedFalse_NoSubeAudioSinTranscripcionLocal()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "nueva.mp3"), "audio-bytes");
+
+        var scanner = new LocalScanner();
+        var snapshot = scanner.ScanDetailed(_root);
+        var transcriptionId = snapshot.Transcriptions.Values.Single().Id;
+
+        var apiHandler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var uploadHandler = new FakeHandler(req => Json("""{"ok":true}"""));
+
+        var index = new SyncIndex(_dbPath);
+        var engine = BuildEngine(_root, _dbPath, apiHandler, uploadHandler);
+
+        var result = await engine.RunAsync("token-123", autoUploadUntranscribed: false);
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+
+        // Nunca se intentó subir el audio (ni prepare/put/transcribe ni el fallback crudo).
+        Assert.Empty(uploadHandler.Requests);
+
+        // La baseline avanza igual para este ítem (return sin excepción, ver
+        // ExecutePushTranscriptionUpsertAsync/BuildBaselineEntry): NO se re-propone en loop cada
+        // ciclo. Cuando el usuario transcriba local, el hash local cambia (texto + mtime, ver
+        // LocalScanner) y el próximo ciclo SÍ sube la transcripción (con texto).
+        var newBaseline = index.LoadBaseline();
+        Assert.True(newBaseline.ContainsKey(transcriptionId));
+    }
+
+    [Fact]
+    public async Task RunAsync_AutoUploadUntranscribedTrue_SubeAudioSinTranscripcionLocal()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "nueva.mp3"), "audio-bytes");
+
+        var apiHandler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var uploadHandler = new FakeHandler(req => Json("""{"ok":true}"""));
+
+        var engine = BuildEngine(_root, _dbPath, apiHandler, uploadHandler);
+
+        // Comportamiento de siempre (motor Groq, autoUploadUntranscribed=true -- default):
+        // el audio sin transcripción local SÍ se sube para que el backend lo transcriba.
+        var result = await engine.RunAsync("token-123", autoUploadUntranscribed: true);
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        Assert.Contains(uploadHandler.Requests, r => r.RequestUri!.AbsolutePath.Contains("/api/transcribe"));
     }
 
     // ---- Bug #1: un borrado desde el desktop no se propagaba a la nube -----------------------

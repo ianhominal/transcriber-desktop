@@ -102,11 +102,18 @@ public sealed class SyncEngine
     /// Corre un ciclo de sync. <paramref name="forceConfirmDeletes"/> es el "sí, quiero borrar
     /// igual" explícito del usuario tras un <see cref="SyncOutcome.ConfirmationPending"/> previo
     /// (el diseño no especifica el nombre exacto de este parámetro; se eligió por claridad).
+    /// <paramref name="autoUploadUntranscribed"/> (bugfix 2026-07-21: respetar el motor elegido) --
+    /// default <c>true</c> para no romper callers/tests existentes -- controla si un audio SIN
+    /// transcripción local se sube solo para que la nube (Groq) lo transcriba server-side (ver
+    /// <see cref="ExecutePushTranscriptionUpsertAsync"/>). Debe ser <c>false</c> cuando el usuario
+    /// eligió el motor Local: si no, el auto-sync le gana de mano transcribiendo con Groq (sin
+    /// diarización) antes de que el usuario transcriba local -- bug real reportado.
     /// </summary>
     public async Task<SyncResult> RunAsync(
         string accessToken,
         DateTimeOffset? since = null,
         bool forceConfirmDeletes = false,
+        bool autoUploadUntranscribed = true,
         CancellationToken ct = default)
     {
         // Bugfix (freezes de UI): SyncCoordinator dispara este método desde un DispatcherTimer sin
@@ -195,7 +202,7 @@ public sealed class SyncEngine
                         break;
 
                     case SyncActionType.PushUpsert when action.Kind == SyncItemKind.Transcription:
-                        await ExecutePushTranscriptionUpsertAsync(action, localSnapshot, pushTranscriptions, accessToken, ct);
+                        await ExecutePushTranscriptionUpsertAsync(action, localSnapshot, pushTranscriptions, accessToken, autoUploadUntranscribed, ct);
                         break;
 
                     case SyncActionType.PushDelete when action.Kind == SyncItemKind.Project:
@@ -449,13 +456,31 @@ public sealed class SyncEngine
         });
     }
 
+    /// <summary>
+    /// Bugfix 2026-07-21 (no respetar el motor elegido): para un audio SIN transcripción local, el
+    /// upload automático a la nube (para que Groq lo transcriba server-side) ahora es condicional a
+    /// <paramref name="autoUploadUntranscribed"/> -- antes se subía SIEMPRE, ignorando que el
+    /// usuario tuviera elegido el motor Local (+ diarización), así que el auto-sync (cada 60s) le
+    /// ganaba de mano transcribiendo con Groq (sin hablantes) antes de que el usuario transcribiera
+    /// local. En <c>false</c>, simplemente se hace <c>return</c> SIN excepción: la acción cuenta
+    /// como "exitosa" este ciclo (no entra a <c>failedIds</c>, ver <see cref="RunAsync"/>), así que
+    /// <see cref="BuildBaselineEntry"/> re-ancla la baseline al estado local actual (audio sin
+    /// texto) -- NO se re-propone en loop cada ciclo. Cuando el usuario transcriba local,
+    /// <see cref="LocalTranscriptionEntry.HasLocalTranscript"/> pasa a <c>true</c>, el hash local
+    /// cambia (texto + mtime, ver <see cref="LocalScanner"/>) y el próximo ciclo SÍ sube la
+    /// transcripción (con texto, por el camino normal de <paramref name="bucket"/>).
+    /// </summary>
     private async Task ExecutePushTranscriptionUpsertAsync(
-        SyncAction action, LocalSnapshot local, PushBucket<TranscriptionUpsert> bucket, string accessToken, CancellationToken ct)
+        SyncAction action, LocalSnapshot local, PushBucket<TranscriptionUpsert> bucket, string accessToken,
+        bool autoUploadUntranscribed, CancellationToken ct)
     {
         var entry = local.Transcriptions[action.Id];
 
         if (!entry.HasLocalTranscript)
         {
+            if (!autoUploadUntranscribed)
+                return; // motor Local: NO auto-transcribir en la nube; se espera a que el usuario transcriba local.
+
             // Audio nuevo sin transcripción local: la fuente de verdad de la transcripción es
             // siempre la nube, así que se sube el audio para que el backend lo transcriba
             // (Groq server-side), en vez de mandar metadata de texto.
@@ -716,8 +741,10 @@ public sealed class SyncEngine
 
         if (audioReady)
         {
+            // "OK" cubre dos casos (ver DownloadAudioBestEffortAsync): se descargó recién, o ya
+            // había un audio local (el original del usuario) que se preservó sin tocar.
             diagnostics.Add(
-                $"transcripción '{remoteTranscription.AudioName}' (proyecto: {projectFolder ?? "General"}): audio descargado OK.");
+                $"transcripción '{remoteTranscription.AudioName}' (proyecto: {projectFolder ?? "General"}): audio OK (descargado o ya presente localmente).");
             return false; // completa: no hubo fallo de descarga que reportar.
         }
 
@@ -743,11 +770,27 @@ public sealed class SyncEngine
     /// SÍ se le informa el resultado al caller (a diferencia de la versión anterior, que tragaba el
     /// fallo en silencio) para que <see cref="RunAsync"/> decida si puede marcar la transcripción
     /// como sincronizada o si tiene que reintentar en el próximo ciclo.
+    /// <para/>
+    /// Bugfix 2026-07-21 (pérdida de calidad de audio): si YA hay un audio local en
+    /// <c>audioPath</c>, es el ORIGINAL del usuario (mejor calidad que el comprimido que guarda la
+    /// nube para que Groq lo transcriba, ver <see cref="UploadAudioAsync"/>) -- NUNCA se pisa. Solo
+    /// se baja el comprimido de la nube cuando NO hay audio local todavía (p.ej. un equipo nuevo
+    /// pulleando todo de cero). Sin este freno, el ciclo siguiente a una subida bajaba ese mismo
+    /// comprimido y pisaba (<c>File.Move</c> con <c>overwrite: true</c>) el WAV de 20MB original con
+    /// la copia de ~2MB -- bug real reportado.
     /// </summary>
     private async Task<bool> DownloadAudioBestEffortAsync(
         Workspace ws, RemoteTranscription remoteTranscription, string? projectFolder, CancellationToken ct)
     {
         var audioPath = ws.AudioPathFor(remoteTranscription.AudioName, projectFolder);
+
+        // Integridad de audio (bugfix 2026-07-21): si ya hay un audio local NO vacío para esta
+        // transcripción, es el ORIGINAL del usuario (mejor calidad que el comprimido que guarda la
+        // nube) -- NUNCA lo pisamos. Solo se baja el comprimido cuando falta un audio local usable
+        // (equipo nuevo pulleando de cero, o un archivo 0-byte que no sirve como original). El
+        // ">0" cubre el caso raro de un archivo vacío por corrupción externa: ahí sí conviene bajar.
+        if (File.Exists(audioPath) && new FileInfo(audioPath).Length > 0)
+            return true; // audio local ya presente y usable: no se descarga nada, no es un fallo.
 
         // Bugfix 2026-07-10 (MEDIUM: re-descarga no atómica corrompe el audio bueno): antes se
         // escribía DIRECTO a audioPath con File.Create, que TRUNCA cualquier archivo existente de

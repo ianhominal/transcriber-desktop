@@ -464,7 +464,7 @@ public sealed partial class SyncCoordinator : ObservableObject
             }
 
             var engine = BuildSyncEngine();
-            var result = await engine.RunAsync(accessToken);
+            var result = await engine.RunAsync(accessToken, autoUploadUntranscribed: ShouldAutoUploadUntranscribed());
 
             // Diagnóstico del pull (bug real: transcripciones de la web que no bajaban al desktop
             // sin ningún rastro de por qué). No había forma de saber cuánto trajo el pull ni cuántas
@@ -515,7 +515,7 @@ public sealed partial class SyncCoordinator : ObservableObject
                     return;
                 }
 
-                result = await engine.RunAsync(accessToken, forceConfirmDeletes: true);
+                result = await engine.RunAsync(accessToken, forceConfirmDeletes: true, autoUploadUntranscribed: ShouldAutoUploadUntranscribed());
                 LogCycleSummary(manual, result);
             }
 
@@ -799,6 +799,19 @@ public sealed partial class SyncCoordinator : ObservableObject
     /// próximo <see cref="PeriodicPullInterval"/> (~60s).
     /// </summary>
     public void RequestSync() => _debouncer.Signal(DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// Bugfix 2026-07-21 (respetar el motor elegido): el auto-upload de un audio sin transcripción
+    /// local (para que Groq lo transcriba server-side, ver <see cref="SyncEngine.RunAsync"/>) solo
+    /// tiene sentido con el motor Groq -- con Local (o diarización, que fuerza <see cref="AppSettings.Engine"/>
+    /// a "local", ver <see cref="AppSettings.UseDiarization"/>) el usuario quiere transcribir él
+    /// mismo, y el auto-sync (timer de 60s) no debe ganarle de mano subiéndolo a la nube antes.
+    /// Default seguro ante cualquier valor inesperado en <see cref="AppSettings.Engine"/>: <c>false</c>
+    /// (no subir de más) -- una sorpresa "se transcribió en la nube sin que yo lo pidiera" es peor
+    /// que una subida que no pasó y el usuario puede forzar manualmente.
+    /// </summary>
+    private bool ShouldAutoUploadUntranscribed() =>
+        string.Equals(_settings.Engine, "groq", StringComparison.OrdinalIgnoreCase);
 
     private SyncEngine BuildSyncEngine()
     {
