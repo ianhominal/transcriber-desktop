@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Threading;
 using AudioTranscriber.Core.Observability;
 using AudioTranscriber.Core.Sync;
+using AudioTranscriber.Core.Workspaces;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
@@ -742,6 +743,62 @@ public sealed partial class SyncCoordinator : ObservableObject
             StatusMessage = $"No se pudo abrir el log: {ex.Message}";
         }
     }
+
+    // ---- Borrado local -> tombstone de sync (bug #1, 2026-07-21) ----------------------------
+    // Un borrado desde el desktop (Workspace.DeleteAudio) movía el audio a .papelera/ pero no
+    // dejaba NINGUNA señal para el sync: MergeWithLocalTombstones (Core) trata la ausencia local
+    // como "sin cambios" a propósito (freno anti-pérdida-de-datos), así que el borrado nunca
+    // llegaba al servidor. Este es el seam que faltaba: registrar el tombstone EXPLÍCITO en el
+    // mismo momento en que el usuario confirma "Borrar" (ver MainViewModel.DeleteAudio/DeleteMarked).
+
+    /// <summary>
+    /// Registra que el usuario borró explícitamente la transcripción de <paramref name="audio"/>
+    /// (dentro de <paramref name="project"/>), para que el próximo ciclo de sync la pushee como
+    /// borrada (ver <see cref="SyncIndex.AddLocalTombstone"/> y
+    /// <see cref="Sync.SyncEngine"/>.MergeWithLocalTombstones en Core). Resuelve el id EXACTO que
+    /// generaría un scan real (<see cref="LocalScanner.ResolveTranscriptionId"/>), usando el mismo
+    /// idMap que ya persiste <see cref="SyncIndex"/>.
+    /// <para/>
+    /// Defensivo a propósito: si todavía no hay carpeta de sync configurada, o el índice no se
+    /// puede abrir (disco, permisos, DB bloqueada), esto no debe impedir que el borrado LOCAL --
+    /// ya aplicado por <c>Workspace.DeleteAudio</c> antes de llamar acá -- se complete con
+    /// normalidad. Un tombstone que no llegó a registrarse simplemente no sube el borrado a la
+    /// nube todavía; no corrompe nada.
+    /// </summary>
+    public void MarkAudioDeletedForSync(AudioProject project, AudioItem audio)
+    {
+        if (string.IsNullOrWhiteSpace(SyncFolder) || !Directory.Exists(SyncFolder))
+            return;
+
+        try
+        {
+            var index = new SyncIndex(SyncIndex.DefaultPathFor(SyncFolder));
+            var idMap = index.LoadIdMap();
+            var projectName = project.IsGeneral ? null : project.Name;
+            var id = LocalScanner.ResolveTranscriptionId(projectName, audio.FileName, idMap);
+            index.AddLocalTombstone(id, SyncItemKind.Transcription);
+        }
+        catch
+        {
+            // Best-effort (ver comentario del método): no debe tirar abajo el borrado ya aplicado.
+        }
+    }
+
+    /// <summary>Overload para un borrado en lote (FEATURE 4, "Borrar (N)") -- mismo criterio que <see cref="MarkAudioDeletedForSync"/> para cada uno.</summary>
+    public void MarkAudiosDeletedForSync(IEnumerable<(AudioProject Project, AudioItem Audio)> deleted)
+    {
+        foreach (var (project, audio) in deleted)
+            MarkAudioDeletedForSync(project, audio);
+    }
+
+    /// <summary>
+    /// Pide un sync en breve reusando el mismo camino corto que ya dispara el
+    /// <see cref="FileSystemWatcher"/> (debounce de <see cref="DebounceDelay"/>, sync NO manual --
+    /// no fuerza confirmación de borrado masivo). Pensado para que un borrado explícito del
+    /// usuario (ver <see cref="MarkAudioDeletedForSync"/>) suba pronto en vez de esperar hasta el
+    /// próximo <see cref="PeriodicPullInterval"/> (~60s).
+    /// </summary>
+    public void RequestSync() => _debouncer.Signal(DateTimeOffset.UtcNow);
 
     private SyncEngine BuildSyncEngine()
     {

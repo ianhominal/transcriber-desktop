@@ -117,12 +117,13 @@ public sealed class SyncEngine
         // antes, solo cambia EN QUÉ HILO se hace el trabajo pesado de disco.
         var baseline = await Task.Run(() => _index.LoadBaseline(), ct);
         var idOverrides = await Task.Run(() => _index.LoadIdMap(), ct);
+        var localTombstones = await Task.Run(() => _index.LoadLocalTombstones(), ct);
 
         var pull = await _api.PullAsync(accessToken, since, ct);
         var remote = _remoteMapper.Map(pull);
 
         var localSnapshot = await Task.Run(() => _scanner.ScanDetailed(_rootPath, idOverrides), ct);
-        var local = MergeWithLocalTombstones(localSnapshot.Items, baseline);
+        var local = MergeWithLocalTombstones(localSnapshot.Items, baseline, localTombstones);
 
         var actions = _planner.Plan(baseline, local, remote)
             // Proyectos primero: una transcripción bajada necesita que su carpeta de proyecto
@@ -295,6 +296,21 @@ public sealed class SyncEngine
 
         await Task.Run(() => _index.SaveBaseline(newBaseline), ct);
         await Task.Run(() => _index.SaveIdMap(newIdOverrides), ct);
+
+        // Limpieza de tombstones ya resueltos (bug #1): un tombstone se da por resuelto si su id
+        // terminó Deleted=true en la nueva baseline (el PushDelete se ejecutó y se pusheó con
+        // éxito) o si directamente nunca estuvo en la baseline (stale -- nada que borrarle al
+        // servidor, ver RunAsync_TombstoneParaIdQueNoEstaEnBaseline... en SyncEngineTests). Los que
+        // quedaron pendientes por un fallo de red (ver failedIds arriba: newBaseline conserva el
+        // valor previo, Deleted=false) NO se limpian acá -- se reintentan solos el próximo ciclo.
+        if (localTombstones.Count > 0)
+        {
+            var resolvedTombstoneIds = localTombstones.Keys
+                .Where(id => !newBaseline.TryGetValue(id, out var item) || item.Deleted)
+                .ToList();
+            if (resolvedTombstoneIds.Count > 0)
+                await Task.Run(() => _index.RemoveLocalTombstones(resolvedTombstoneIds), ct);
+        }
 
         var pushedCount = pushProjects.Upserts.Count + pushProjects.Deletes.Count
             + pushTranscriptions.Upserts.Count + pushTranscriptions.Deletes.Count;
@@ -839,22 +855,43 @@ public sealed class SyncEngine
 
     private static Dictionary<string, SyncItemState> MergeWithLocalTombstones(
         IReadOnlyDictionary<string, SyncItemState> rawLocal,
-        IReadOnlyDictionary<string, SyncBaselineItem> baseline)
+        IReadOnlyDictionary<string, SyncBaselineItem> baseline,
+        IReadOnlyDictionary<string, SyncItemKind> localTombstones)
     {
         // SEGURIDAD (bugfix de PÉRDIDA DE DATOS): NO sintetizar tombstones por ausencia local.
         //
         // El scan local enumera transcripciones por su archivo de AUDIO. Una transcripción bajada
         // de la nube escribe solo el .txt (el audio todavía no se descarga — gap de Fase D), así que
-        // "desaparece" del scan del ciclo siguiente. Con la síntesis activa, esa ausencia se
-        // interpretaba como "borrado local" y se propagaba como PushDelete → BORRABA la nube
+        // "desaparece" del scan del ciclo siguiente. Sintetizar un tombstone por esa ausencia sola
+        // se interpretaba como "borrado local" y se propagaba como PushDelete → BORRABA la nube
         // (caso real: primera sync con carpeta vacía + nube con datos vaciaba la cuenta).
         //
-        // Hasta que el scan sea confiable (descargar el audio y/o contar el .txt como presencia),
-        // preferimos NUNCA borrar la nube por inferencia: la ausencia local se trata como
-        // "sin cambios". Los borrados hechos DESDE LA WEB siguen aplicándose vía PullDelete
-        // (tombstone real que manda el backend), que es una señal explícita, no inferida.
-        _ = baseline; // se conserva para cuando se reactive una detección de borrado local segura
-        return new Dictionary<string, SyncItemState>(rawLocal);
+        // La ausencia local SOLA sigue tratándose SIEMPRE como "sin cambios" -- NUNCA se infiere un
+        // borrado. Lo único que puede inyectar Deleted=true acá es un tombstone EXPLÍCITO
+        // (<paramref name="localTombstones"/>, ver SyncIndex.AddLocalTombstone), registrado por
+        // SyncCoordinator.MarkAudioDeletedForSync en el momento exacto en que el usuario tocó
+        // "Borrar" (ver Workspace.DeleteAudio). Los borrados hechos DESDE LA WEB siguen aplicándose
+        // vía PullDelete (tombstone real que manda el backend) -- este mecanismo es el equivalente
+        // LOCAL de esa misma señal explícita, nunca inferida.
+        var result = new Dictionary<string, SyncItemState>(rawLocal);
+
+        foreach (var (id, kind) in localTombstones)
+        {
+            // Nada que borrar / seguridad: sin un baseline vivo para este id (nunca se sincronizó,
+            // o ya estaba borrado) no hay ningún borrado real que propagarle al servidor.
+            if (!baseline.TryGetValue(id, out var baselineItem) || baselineItem.Deleted)
+                continue;
+
+            // El scan SÍ encuentra el item con audio real de nuevo (p.ej. el usuario deshizo el
+            // borrado a mano restaurando el archivo antes del próximo ciclo): no pisar un item vivo
+            // con un borrado que ya no corresponde.
+            if (rawLocal.ContainsKey(id))
+                continue;
+
+            result[id] = new SyncItemState(id, kind, baselineItem.LastLocalHash, baselineItem.UpdatedAt, Deleted: true);
+        }
+
+        return result;
     }
 
     private static bool HasContent<T>(PushBucket<T> bucket) => bucket.Upserts.Count > 0 || bucket.Deletes.Count > 0;

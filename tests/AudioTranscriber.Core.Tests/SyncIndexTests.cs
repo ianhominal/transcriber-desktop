@@ -150,4 +150,55 @@ public class SyncIndexTests : IDisposable
 
         Assert.Equal("remote-id-1", loaded["project:Trabajo"]);
     }
+
+    // ---- Tombstones locales (bug #1: un borrado desde el desktop no se propagaba a la nube) ----
+    // Señal explícita del usuario ("Borrar") que SyncEngine.MergeWithLocalTombstones usa para
+    // inyectar Deleted=true SOLO para items que el usuario borró de verdad -- ver el freno de
+    // seguridad en SyncEngineTests (la ausencia SOLA, sin este tombstone, nunca genera un borrado).
+
+    [Fact]
+    public void LoadLocalTombstones_SinDatos_DevuelveVacio()
+    {
+        var index = new SyncIndex(_dbPath);
+
+        Assert.Empty(index.LoadLocalTombstones());
+    }
+
+    [Fact]
+    public void AddLocalTombstone_LuegoLoad_RoundTrip()
+    {
+        var index = new SyncIndex(_dbPath);
+
+        index.AddLocalTombstone("t1", SyncItemKind.Transcription);
+        var loaded = index.LoadLocalTombstones();
+
+        Assert.Single(loaded);
+        Assert.Equal(SyncItemKind.Transcription, loaded["t1"]);
+    }
+
+    [Fact]
+    public void AddLocalTombstone_MismoId_ReemplazaSinDuplicar()
+    {
+        var index = new SyncIndex(_dbPath);
+
+        index.AddLocalTombstone("t1", SyncItemKind.Transcription);
+        index.AddLocalTombstone("t1", SyncItemKind.Transcription);
+        var loaded = index.LoadLocalTombstones();
+
+        Assert.Single(loaded);
+    }
+
+    [Fact]
+    public void RemoveLocalTombstones_SacaSoloLosIndicados()
+    {
+        var index = new SyncIndex(_dbPath);
+        index.AddLocalTombstone("t1", SyncItemKind.Transcription);
+        index.AddLocalTombstone("t2", SyncItemKind.Transcription);
+
+        index.RemoveLocalTombstones(new[] { "t1" });
+        var loaded = index.LoadLocalTombstones();
+
+        Assert.Single(loaded);
+        Assert.True(loaded.ContainsKey("t2"));
+    }
 }

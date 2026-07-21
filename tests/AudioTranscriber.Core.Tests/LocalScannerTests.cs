@@ -197,4 +197,47 @@ public class LocalScannerTests : IDisposable
 
         Assert.True(snapshot.Transcriptions.ContainsKey("remote-transcription-id"));
     }
+
+    // ---- ResolveTranscriptionId (bug #1: borrado local no se propagaba a la nube) -------------
+    // SyncCoordinator.MarkAudioDeletedForSync necesita resolver el MISMO id que produce el scan
+    // para un audio, sin tener que correr un ScanDetailed completo, para poder registrar el
+    // tombstone de sync en el momento del borrado (ver Workspace.DeleteAudio).
+
+    [Fact]
+    public void ResolveTranscriptionId_SinOverride_CoincideConElIdDelScanReal()
+    {
+        SeedWorkspace();
+
+        var snapshot = _scanner.ScanDetailed(_root);
+        var expected = snapshot.Transcriptions.Values.Single().Id;
+
+        var resolved = LocalScanner.ResolveTranscriptionId("Trabajo", "reunion.mp3", new Dictionary<string, string>());
+
+        Assert.Equal(expected, resolved);
+    }
+
+    [Fact]
+    public void ResolveTranscriptionId_ConOverride_UsaElIdDelMapa()
+    {
+        var pathKey = LocalScanner.TranscriptionPathKey("Trabajo", "reunion.mp3");
+        var idMap = new Dictionary<string, string> { [pathKey] = "remote-id-1" };
+
+        var resolved = LocalScanner.ResolveTranscriptionId("Trabajo", "reunion.mp3", idMap);
+
+        Assert.Equal("remote-id-1", resolved);
+    }
+
+    [Fact]
+    public void ResolveTranscriptionId_ProyectoGeneral_CoincideConElIdDelScanReal()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "suelto.wav"), "audio-bytes");
+
+        var snapshot = _scanner.ScanDetailed(_root);
+        var expected = snapshot.Transcriptions.Values.Single().Id;
+
+        var resolved = LocalScanner.ResolveTranscriptionId(null, "suelto.wav", new Dictionary<string, string>());
+
+        Assert.Equal(expected, resolved);
+    }
 }

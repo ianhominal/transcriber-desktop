@@ -134,6 +134,21 @@ public sealed class LocalScanner
         $"transcription:{projectName}/{audioFileName}";
 
     /// <summary>
+    /// Resuelve el mismo id que <see cref="ScanDetailed"/> le asignaría a la transcripción
+    /// (proyecto, archivo de audio) sin tener que correr un scan completo del disco. Pensado para
+    /// <see cref="SyncCoordinator.MarkAudioDeletedForSync"/> (bug #1, borrado local no propagado a
+    /// la nube): en el momento del borrado hace falta resolver el id de sync de ESE audio puntual
+    /// para registrar su tombstone, replicando EXACTO el criterio de <paramref name="idMap"/> +
+    /// <see cref="HashId"/> que usa el scan real -- cualquier diferencia acá generaría un id
+    /// distinto y el tombstone nunca calzaría con la baseline.
+    /// </summary>
+    public static string ResolveTranscriptionId(string? projectName, string audioFileName, IReadOnlyDictionary<string, string> idMap)
+    {
+        var key = TranscriptionPathKey(projectName, audioFileName);
+        return idMap.TryGetValue(key, out var mapped) ? mapped : HashId(key);
+    }
+
+    /// <summary>
     /// Id determinístico (mismo pathKey -&gt; mismo id, siempre, sin persistir nada) con formato
     /// UUID válido. Antes se usaba directo el hex de 64 caracteres de <see cref="ContentHasher"/>,
     /// que NO es un UUID: la columna "projects.id"/"transcriptions.id" del backend es `uuid` en

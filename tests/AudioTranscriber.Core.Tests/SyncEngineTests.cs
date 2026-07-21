@@ -800,4 +800,117 @@ public class SyncEngineTests : IDisposable
         // Diagnóstico deja rastro del fallo.
         Assert.Contains(result.Diagnostics!, d => d.Contains(failId));
     }
+
+    // ---- Bug #1: un borrado desde el desktop no se propagaba a la nube -----------------------
+    // MergeWithLocalTombstones ahora SÍ puede inyectar Deleted=true, pero SOLO para un id con un
+    // tombstone local EXPLÍCITO (ver SyncIndex.AddLocalTombstone) -- nunca por la sola ausencia
+    // del scan. Ver también RunAsync_AusenciaLocal_NoGeneraPushDelete más arriba, que cubre el
+    // mismo invariante de seguridad sin ningún tombstone de por medio.
+
+    [Fact]
+    public async Task RunAsync_ItemAusenteConTombstoneParaOtroId_NoGeneraPushDeleteParaElAusente()
+    {
+        // INVARIANTE DE SEGURIDAD: un tombstone registrado para un id que NO es el que desapareció
+        // no debe "contaminar" el item realmente ausente -- confirma que la inyección es por id,
+        // no un interruptor global que reabra el bug de vaciado de cuenta.
+        var ws = Workspace.OpenOrCreate(_root);
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "nota.mp3"), "audio-bytes");
+        File.WriteAllText(ws.TranscriptPathFor("nota.mp3"), "texto original");
+
+        var scanner = new LocalScanner();
+        var initialScan = scanner.Scan(_root);
+        var transcriptionId = initialScan.First(kv => kv.Value.Kind == SyncItemKind.Transcription).Key;
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [transcriptionId] = AsBaseline(initialScan[transcriptionId]),
+        });
+        // Tombstone para un id CUALQUIERA, no relacionado con "nota.mp3".
+        index.AddLocalTombstone("id-no-relacionado", SyncItemKind.Transcription);
+
+        // Mismo gap de siempre: el audio desaparece de disco sin que el usuario lo haya borrado.
+        File.Delete(Path.Combine(ws.AudiosPath, "nota.mp3"));
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        Assert.DoesNotContain(result.Actions, a => a.Type == SyncActionType.PushDelete);
+        Assert.False(index.LoadBaseline()[transcriptionId].Deleted);
+    }
+
+    [Fact]
+    public async Task RunAsync_ConTombstoneExplicitoParaItemVivo_GeneraPushDeleteYLimpiaElTombstone()
+    {
+        // El caso que el bug #1 necesitaba: el usuario borra desde el desktop (Workspace.DeleteAudio
+        // ya movió el archivo a .papelera/ -- acá se simula sacándolo de disco) Y se registró el
+        // tombstone explícito (lo que va a hacer SyncCoordinator.MarkAudioDeletedForSync). Debe
+        // viajar como PushDelete, la baseline debe quedar Deleted=true, y el tombstone -- ya
+        // resuelto -- debe limpiarse para no reintentarlo de nuevo el próximo ciclo.
+        var ws = Workspace.OpenOrCreate(_root);
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "nota.mp3"), "audio-bytes");
+        File.WriteAllText(ws.TranscriptPathFor("nota.mp3"), "texto original");
+        // Otros audios sin cambios, solo para diluir el % de borrados de este ciclo por debajo
+        // del freno anti-borrado-masivo (SyncEngine.MassDeletionThreshold) -- no es lo que este
+        // test ejercita, ver RunAsync_BorradoMasivo_* más arriba para ESE comportamiento.
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "otra1.mp3"), "audio-bytes-1");
+        File.WriteAllText(ws.TranscriptPathFor("otra1.mp3"), "sin cambios 1");
+        File.WriteAllText(Path.Combine(ws.AudiosPath, "otra2.mp3"), "audio-bytes-2");
+        File.WriteAllText(ws.TranscriptPathFor("otra2.mp3"), "sin cambios 2");
+
+        var scanner = new LocalScanner();
+        var initialScan = scanner.Scan(_root);
+        var transcriptionId = LocalScanner.ResolveTranscriptionId(null, "nota.mp3", new Dictionary<string, string>());
+        var baselineEntries = initialScan.ToDictionary(kv => kv.Key, kv => AsBaseline(kv.Value));
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(baselineEntries); // todos vivos, Deleted=false
+        index.AddLocalTombstone(transcriptionId, SyncItemKind.Transcription);
+
+        // El borrado real ya movió el audio y el .txt a .papelera/ (ver Workspace.DeleteAudio) --
+        // acá alcanza con que ya no estén en su ubicación original.
+        File.Delete(Path.Combine(ws.AudiosPath, "nota.mp3"));
+        File.Delete(ws.TranscriptPathFor("nota.mp3"));
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        var deleteAction = Assert.Single(result.Actions, a => a.Type == SyncActionType.PushDelete);
+        Assert.Equal(transcriptionId, deleteAction.Id);
+
+        // Se avisó al servidor.
+        var pushBody = handler.Bodies[handler.Requests.FindIndex(r => r.Method == HttpMethod.Post)];
+        Assert.Contains(transcriptionId, pushBody);
+
+        // La baseline quedó marcada como borrada.
+        Assert.True(index.LoadBaseline()[transcriptionId].Deleted);
+
+        // El tombstone, ya resuelto, se limpió -- no debe reintentarse en el próximo ciclo.
+        Assert.Empty(index.LoadLocalTombstones());
+    }
+
+    [Fact]
+    public async Task RunAsync_TombstoneParaIdQueNoEstaEnBaseline_NoGeneraAccionYSeLimpiaElTombstoneStale()
+    {
+        // Un tombstone para un id que nunca llegó a sincronizarse (o ya no existe en la baseline)
+        // no tiene nada que borrar en el servidor -- no debe generar ninguna acción, y el tombstone
+        // stale se limpia para no acumularse para siempre.
+        var index = new SyncIndex(_dbPath);
+        index.AddLocalTombstone("id-nunca-sincronizado", SyncItemKind.Transcription);
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        Assert.DoesNotContain(result.Actions, a => a.Id == "id-nunca-sincronizado");
+        Assert.Empty(index.LoadLocalTombstones());
+    }
 }

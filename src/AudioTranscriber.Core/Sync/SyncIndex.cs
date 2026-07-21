@@ -52,6 +52,10 @@ public sealed class SyncIndex
                     PathKey TEXT PRIMARY KEY,
                     Id TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS SyncLocalTombstone (
+                    Id TEXT PRIMARY KEY,
+                    Kind INTEGER NOT NULL
+                );
                 """;
             cmd.ExecuteNonQuery();
         }
@@ -198,6 +202,60 @@ public sealed class SyncIndex
             cmd.Transaction = tx;
             cmd.CommandText = "INSERT INTO SyncIdMap (PathKey, Id) VALUES ($pathKey, $id)";
             cmd.Parameters.AddWithValue("$pathKey", pathKey);
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    // ---- Tombstones locales (bug #1: un borrado desde el desktop no se propagaba a la nube) ----
+    // Señal EXPLÍCITA de que el usuario borró un item (ver Workspace.DeleteAudio + el seam en
+    // SyncCoordinator.MarkAudioDeletedForSync) -- a diferencia de la baseline/idMap, esto no es un
+    // "replace-all": cada fila se agrega/saca individualmente a medida que el usuario borra y el
+    // sync confirma el borrado contra el servidor (ver SyncEngine.RunAsync).
+
+    /// <summary>Tombstones locales pendientes: id -&gt; tipo de item borrado.</summary>
+    public Dictionary<string, SyncItemKind> LoadLocalTombstones()
+    {
+        var result = new Dictionary<string, SyncItemKind>();
+
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Id, Kind FROM SyncLocalTombstone";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            result[reader.GetString(0)] = (SyncItemKind)reader.GetInt32(1);
+
+        return result;
+    }
+
+    /// <summary>Registra (o re-confirma) que el usuario borró explícitamente el item <paramref name="id"/>.</summary>
+    public void AddLocalTombstone(string id, SyncItemKind kind)
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT OR REPLACE INTO SyncLocalTombstone (Id, Kind) VALUES ($id, $kind)";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$kind", (int)kind);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Saca los tombstones ya resueltos (pusheados con éxito, o stale -- nunca llegaron a estar en
+    /// la baseline). Ver <see cref="Sync.SyncEngine.RunAsync"/>: los que quedaron pendientes por un
+    /// fallo de red NO se pasan acá, para que se reintenten el próximo ciclo.
+    /// </summary>
+    public void RemoveLocalTombstones(IEnumerable<string> ids)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+
+        foreach (var id in ids)
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "DELETE FROM SyncLocalTombstone WHERE Id = $id";
             cmd.Parameters.AddWithValue("$id", id);
             cmd.ExecuteNonQuery();
         }

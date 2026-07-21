@@ -1451,7 +1451,21 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
+            // Resuelve el proyecto dueño de cada audio ANTES de borrar (mismo criterio que
+            // DeleteAudio -- por membresía real en Projects, no por SelectedProject).
+            var ownership = marked
+                .Select(a => (Project: Projects.FirstOrDefault(p => p.Audios.Contains(a)), Audio: a))
+                .Where(x => x.Project is not null)
+                .Select(x => (Project: x.Project!.Model, Audio: x.Audio.Model))
+                .ToList();
+
             _workspace.DeleteAudios(marked.Select(a => a.Model));
+
+            // Bugfix 2026-07-21 (bug #1): mismo seam que DeleteAudio -- registra un tombstone de
+            // sync por cada audio borrado, para que el próximo ciclo los pushee como borrados.
+            SyncCoordinator.Instance.MarkAudiosDeletedForSync(ownership);
+            SyncCoordinator.Instance.RequestSync();
+
             if (SelectedAudio is not null && marked.Contains(SelectedAudio))
                 SelectedAudio = null;
             IsMergeModeActive = false;
@@ -1688,7 +1702,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         try
         {
-            _workspace.DeleteAudio(SelectedAudio.Model);
+            // Resuelto por membresía real (no SelectedProject a secas: mismo criterio que
+            // OnTreeSelectionChanged) para no depender de que la selección de proyecto esté
+            // sincronizada con la del audio en este punto exacto.
+            var owner = Projects.FirstOrDefault(p => p.Audios.Contains(SelectedAudio));
+            var audio = SelectedAudio.Model;
+
+            _workspace.DeleteAudio(audio);
+
+            // Bugfix 2026-07-21 (bug #1): registra el tombstone de sync DESPUÉS del borrado local
+            // ya aplicado -- ver SyncCoordinator.MarkAudioDeletedForSync. Sin esto, la ausencia
+            // local nunca se propagaba a la nube (ver MergeWithLocalTombstones en Core). Defensivo
+            // si el owner no se resolvió (no debería pasar en el flujo normal de la UI).
+            if (owner is not null)
+            {
+                SyncCoordinator.Instance.MarkAudioDeletedForSync(owner.Model, audio);
+                SyncCoordinator.Instance.RequestSync();
+            }
+
             SelectedAudio = null;
             RefreshAudios();
         }
