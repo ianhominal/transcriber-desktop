@@ -8,7 +8,7 @@ namespace AudioTranscriber.App.ViewModels;
 
 /// <summary>
 /// ViewModel de "Unir notas" (<see cref="MergeNotesWindow"/>): combina varias transcripciones ya
-/// elegidas en <c>MainWindow</c> (ver <see cref="MainViewModel.MergeSelectedCommand"/>) en un solo
+/// elegidas (ver <c>BrainViewModel.CombineIntoDocumentCommand</c>, feature 1.0.56) en un solo
 /// documento generado por IA (ver <see cref="AiMergeClient"/>, brief "Híbrido nativo" 2026-07-14).
 /// Helpers REPLICADOS (no heredados), mismo criterio que <see cref="FormatosViewModel"/>.
 /// </summary>

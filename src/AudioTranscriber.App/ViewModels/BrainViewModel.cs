@@ -206,10 +206,10 @@ public partial class BrainViewModel : ObservableObject
 
     /// <summary>
     /// Abre <see cref="MergeNotesWindow"/> con las notas del proyecto (<see cref="_mergeCandidates"/>,
-    /// ya resueltas por el caller -- ver <c>MainViewModel.OpenProjectAssistant</c>). Segundo punto de
-    /// entrada INDEPENDIENTE al viejo "Unir notas" multi-proyecto (<c>MainViewModel.MergeSelectedCommand</c>):
-    /// reusa la MISMA <see cref="MergeNotesWindow"/>/<see cref="MergeNotesViewModel"/>/<see cref="AiMergeClient"/>
-    /// por debajo, sin tocar el estado del modo unir viejo (<c>IsMergeModeActive</c>/<c>IsMarkedForMerge</c>).
+    /// ya resueltas por el caller -- ver <c>MainViewModel.OpenProjectAssistant</c>). Único punto de
+    /// entrada a "Unir notas" desde el rediseño 2026-07-22 (el viejo modo checkbox multi-proyecto de
+    /// <c>MainWindow</c> se eliminó): reusa la misma <see cref="MergeNotesWindow"/>/
+    /// <see cref="MergeNotesViewModel"/>/<see cref="AiMergeClient"/> por debajo.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanCombineIntoDocument))]
     private void CombineIntoDocument()

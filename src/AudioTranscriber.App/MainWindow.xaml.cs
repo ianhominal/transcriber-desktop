@@ -111,10 +111,39 @@ public partial class MainWindow : Window
     // F3: clic sobre un ítem del listado de archivos de la vista de proyecto (panel derecho, ver
     // MainViewModel.ShowProjectFilesView) -- mismo criterio de forwarding a code-behind que el
     // TreeView de arriba, en vez de un Command bindeado desde el DataTemplate del ítem.
+    //
+    // Multi-select nativo (SelectionMode="Extended", ver MainWindow.xaml): ListBox.SelectedItems
+    // no es bindeable en WPF, así que se trackea acá y se lo pasa al VM
+    // (MainViewModel.SetSelectedProjectFiles) para el botón/tecla "Borrar seleccionados". Con
+    // exactamente 1 elegido Y sin Ctrl/Shift (Keyboard.Modifiers) se abre la nota, igual que
+    // antes -- un click plano SIEMPRE cae en este caso, así que el comportamiento de un solo
+    // audio no cambió. Si el 1 restante llegó por Ctrl/Shift-click (por ej. deseleccionando hasta
+    // dejar uno solo mientras se arma una selección múltiple) NO se abre la nota: abrir acá
+    // dispararía SelectedAudio != null, lo que oculta este mismo ListBox (ver
+    // ShowProjectFilesView) y cortaría la selección múltiple a mitad de camino.
     private void OnProjectFileSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (DataContext is MainViewModel vm && sender is ListBox { SelectedItem: AudioItemVm audio })
-            vm.SelectProjectFile(audio);
+        if (DataContext is not MainViewModel vm || sender is not ListBox listBox)
+            return;
+
+        var selected = listBox.SelectedItems.Cast<AudioItemVm>().ToList();
+        vm.SetSelectedProjectFiles(selected);
+
+        if (selected.Count == 1 && Keyboard.Modifiers == ModifierKeys.None)
+            vm.SelectProjectFile(selected[0]);
+    }
+
+    // Tecla Delete sobre ProjectFilesList: borra todo lo seleccionado (1 o más), mismo comando que
+    // el botón contextual "Borrar seleccionados (N)" del header.
+    private void OnProjectFilesListKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Delete || DataContext is not MainViewModel vm)
+            return;
+        if (vm.DeleteSelectedFilesCommand.CanExecute(null))
+        {
+            vm.DeleteSelectedFilesCommand.Execute(null);
+            e.Handled = true;
+        }
     }
 
     // Iniciar arrastre de un audio (para moverlo a otro proyecto).

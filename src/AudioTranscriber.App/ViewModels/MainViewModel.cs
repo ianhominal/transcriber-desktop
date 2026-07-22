@@ -617,6 +617,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(DeleteProjectCommand))]
     [NotifyCanExecuteChangedFor(nameof(EditProjectMetaCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenProjectAssistantCommand))]
+    [NotifyCanExecuteChangedFor(nameof(OpenAssistantCommand))]
     [NotifyCanExecuteChangedFor(nameof(RenameSelectedCommand))]
     [NotifyCanExecuteChangedFor(nameof(DeleteSelectedCommand))]
     // FEATURE 2 (2026-07-17): CanTranscribe() ahora también depende de SelectedProject (batch-
@@ -684,6 +685,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(RenameSelectedCommand))]
     [NotifyCanExecuteChangedFor(nameof(DeleteSelectedCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenNoteDetailCommand))]
+    [NotifyCanExecuteChangedFor(nameof(OpenAssistantCommand))]
     [NotifyPropertyChangedFor(nameof(ShowProjectFilesView))]
     [NotifyPropertyChangedFor(nameof(ShowEmptyPlaceholder))]
     [NotifyPropertyChangedFor(nameof(TranscribeDisabledReason))]
@@ -1059,19 +1061,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
             ResolveRemoteIds();
             RestoreSelection(selProjName, selAudioPath);
 
-            // "Unir notas" (ver región más abajo): cada AudioItemVm es una instancia NUEVA acá
-            // (Projects.Clear() + reconstrucción completa), así que el checkbox de marcado siempre
-            // arranca en false y hay que re-suscribirse para que MarkedForMergeCount seguía en
-            // sync -- las instancias viejas quedan sin listener y se recolectan solas.
-            foreach (var p in Projects)
-                foreach (var a in p.Audios)
-                    a.PropertyChanged += OnAudioPropertyChanged;
-            OnPropertyChanged(nameof(MarkedForMergeCount));
-            MergeSelectedCommand.NotifyCanExecuteChanged();
-            // FEATURE 4 (2026-07-17): mismo motivo que MergeSelectedCommand arriba — cada
-            // refresh reconstruye instancias nuevas de AudioItemVm, todas sin marcar.
-            DeleteMarkedCommand.NotifyCanExecuteChanged();
-
             // "Resurfacing" (ver región más abajo): recalculado sobre el árbol recién reconstruido.
             ComputeResurfaceCandidate();
 
@@ -1403,126 +1392,113 @@ public partial class MainViewModel : ObservableObject, IDisposable
         window.Show();
     }
 
-    // ---- Unir notas (modo explícito + AiMergeClient / MergeNotesWindow) ----------------------------
+    private bool CanOpenAssistant() => SelectedAudio is not null ? CanOpenNoteDetail() : CanOpenProjectAssistant();
 
     /// <summary>
-    /// Rediseño 2026-07-14: el checkbox de marcado (<see cref="AudioItemVm.IsMarkedForMerge"/>) ya
-    /// NO está siempre visible al lado de cada audio -- ensuciaba la lista y no se entendía para
-    /// qué servía. Ahora es un MODO explícito: arranca en false (lista limpia, sin checkboxes);
-    /// el botón "Unir notas" lo prende (<see cref="ToggleMergeModeCommand"/>); "Cancelar" en la
-    /// barra de instrucciones lo apaga y limpia la selección (<see cref="ClearMergeSelection"/>).
+    /// Dispatcher contextual del botón "Asistente IA" (rediseño 2026-07-22): con una nota abierta
+    /// (<see cref="SelectedAudio"/> no nulo) abre su detalle nativo, igual que antes (ver
+    /// <see cref="OpenNoteDetail"/>); sin nota abierta pero con un proyecto elegido, abre el
+    /// asistente de ESE proyecto (ver <see cref="OpenProjectAssistant"/>, mismo BrainWindow que
+    /// "Asistente del proyecto"). Permite que un solo Command sirva tanto al botón del editor de
+    /// transcript como al gemelo del header de la vista de proyecto (ver MainWindow.xaml,
+    /// ProjectFilesList).
     /// </summary>
+    [RelayCommand(CanExecute = nameof(CanOpenAssistant))]
+    private void OpenAssistant()
+    {
+        if (SelectedAudio is not null)
+            OpenNoteDetail();
+        else
+            OpenProjectAssistant();
+    }
+
+    // ---- Multi-select nativo de ProjectFilesList (borrar varios, reemplaza el viejo modo checkbox
+    //      "Unir notas" para este caso -- ver rediseño 2026-07-22) ------------------------------
+
+    /// <summary>
+    /// Selección actual del <c>ListBox x:Name="ProjectFilesList"</c> (panel derecho, vista de
+    /// proyecto -- ver <see cref="ShowProjectFilesView"/>), trackeada desde code-behind
+    /// (<c>MainWindow.xaml.cs.OnProjectFileSelectionChanged</c>) porque <c>ListBox.SelectedItems</c>
+    /// no es bindeable directo en WPF.
+    /// </summary>
+    private IReadOnlyList<AudioItemVm> _selectedProjectFiles = Array.Empty<AudioItemVm>();
+
+    /// <summary>Cuántos audios hay elegidos ahora mismo en <see cref="ProjectFilesList"/> (ver arriba).</summary>
     [ObservableProperty]
-    private bool _isMergeModeActive;
-
-    /// <summary>Entra/sale del modo "Unir notas" (botón del header del explorador).</summary>
-    [RelayCommand]
-    private void ToggleMergeMode() => IsMergeModeActive = !IsMergeModeActive;
-
-    /// <summary>Cuántos audios del árbol están marcados con <see cref="AudioItemVm.IsMarkedForMerge"/> ahora mismo.</summary>
-    public int MarkedForMergeCount => Projects.SelectMany(p => p.Audios).Count(a => a.IsMarkedForMerge);
+    [NotifyCanExecuteChangedFor(nameof(DeleteSelectedFilesCommand))]
+    [NotifyPropertyChangedFor(nameof(ShowDeleteSelectedFilesButton))]
+    private int _selectedProjectFilesCount;
 
     /// <summary>
-    /// Reenvía cambios de <see cref="AudioItemVm.IsMarkedForMerge"/> de CUALQUIER audio del árbol a
-    /// <see cref="MarkedForMergeCount"/> (propiedad computada, no observable por sí sola) y al
-    /// CanExecute de <see cref="MergeSelectedCommand"/>. Suscripto en <see cref="RefreshAudios"/>
-    /// a cada <see cref="AudioItemVm"/> reconstruido.
+    /// "Borrar seleccionados (N)" solo aparece con 2+ elegidos: con exactamente 1, el click ya
+    /// abrió esa nota (ver <c>OnProjectFileSelectionChanged</c>) y este panel se oculta solo
+    /// (<see cref="ShowProjectFilesView"/> pasa a false), así que ese caso nunca llega a mostrar
+    /// el botón. El borrado de 1 solo sigue disponible por la tecla Delete o por el 🗑 individual
+    /// (<see cref="DeleteAudio"/>).
     /// </summary>
-    private void OnAudioPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    public bool ShowDeleteSelectedFilesButton => SelectedProjectFilesCount >= 2;
+
+    /// <summary>
+    /// Actualiza el tracking de selección múltiple de <see cref="ProjectFilesList"/> (ver
+    /// <see cref="SelectedProjectFilesCount"/> / <see cref="ShowDeleteSelectedFilesButton"/> /
+    /// <see cref="DeleteSelectedFilesCommand"/>). Llamado desde
+    /// <c>MainWindow.xaml.cs.OnProjectFileSelectionChanged</c> en cada cambio de selección del
+    /// ListBox.
+    /// </summary>
+    public void SetSelectedProjectFiles(IReadOnlyList<AudioItemVm> items)
     {
-        if (e.PropertyName != nameof(AudioItemVm.IsMarkedForMerge))
-            return;
-        OnPropertyChanged(nameof(MarkedForMergeCount));
-        MergeSelectedCommand.NotifyCanExecuteChanged();
-        // FEATURE 4 (2026-07-17): "Borrar (N)" reusa el mismo marcado — mismo refresco de
-        // CanExecute que MergeSelectedCommand, ver DeleteMarkedCommand más abajo.
-        DeleteMarkedCommand.NotifyCanExecuteChanged();
+        _selectedProjectFiles = items;
+        SelectedProjectFilesCount = items.Count;
     }
 
     /// <summary>
-    /// Botón "Cancelar" de la barra de instrucciones del modo unir: desmarca todos los audios
-    /// elegidos Y sale del modo (vuelve la lista limpia, sin checkboxes).
+    /// Al cambiar de proyecto (otro nodo del árbol, u otro RefreshAudios), la selección vieja de
+    /// <see cref="ProjectFilesList"/> queda apuntando a instancias de <see cref="AudioItemVm"/> que
+    /// ya no son las del ListBox recién bindeado -- se limpia para no dejar "Borrar seleccionados
+    /// (N)" colgado con un número que ya no corresponde a nada visible.
     /// </summary>
-    [RelayCommand]
-    private void ClearMergeSelection()
-    {
-        foreach (var a in Projects.SelectMany(p => p.Audios))
-            a.IsMarkedForMerge = false;
-        IsMergeModeActive = false;
-    }
+    partial void OnSelectedProjectChanged(ProjectVm? value) => SetSelectedProjectFiles(Array.Empty<AudioItemVm>());
 
-    private bool CanMergeSelected() => AiMergeClient.CanMergeNoteCount(MarkedForMergeCount);
+    private bool CanDeleteSelectedFiles() => _selectedProjectFiles.Count > 0;
 
     /// <summary>
-    /// Abre <see cref="MergeNotesWindow"/> con los audios marcados. Solo pueden unirse notas ya
-    /// sincronizadas (necesitan <see cref="AudioItemVm.RemoteId"/> -- el backend opera sobre ids
-    /// remotos, mismo requisito que "🧠 Asistente IA"): si alguna marcada todavía no sincronizó, se
-    /// avisa en vez de abrir la ventana con una lista incompleta.
+    /// Borra los audios elegidos en <see cref="ProjectFilesList"/> (multi-select nativo con
+    /// Ctrl/Shift+click, o la tecla Delete -- ver <c>MainWindow.xaml.cs.OnProjectFilesListKeyDown</c>),
+    /// con confirmación. Mismo camino de borrado con tombstone de sync que ya usaba el viejo
+    /// "Borrar (N)" del modo checkbox (reemplazado por este comando, rediseño 2026-07-22): registra
+    /// un tombstone por cada audio ANTES de perder su proyecto dueño (bugfix 2026-07-21, bug #1),
+    /// para que el próximo ciclo de sync los pushee como borrados. Mismo destino que un borrado
+    /// individual (<see cref="DeleteAudio"/>): papelera, nunca permanente.
     /// </summary>
-    [RelayCommand(CanExecute = nameof(CanMergeSelected))]
-    private void MergeSelected()
-    {
-        var marked = Projects.SelectMany(p => p.Audios).Where(a => a.IsMarkedForMerge).ToList();
-        if (marked.Any(a => a.RemoteId is null))
-        {
-            StatusMessage = "Alguna de las notas elegidas todavía no terminó de sincronizarse. Esperá un momento y volvé a intentar.";
-            return;
-        }
-
-        var notes = marked.Select(a => (RemoteId: a.RemoteId!, Title: Path.GetFileNameWithoutExtension(a.FileName))).ToList();
-        var window = new MergeNotesWindow(notes) { Owner = Application.Current.MainWindow };
-        window.Show();
-
-        // La ventana ya se llevó los ids que necesita (capturados arriba en "notes"): salir del
-        // modo unir y limpiar el marcado local no le afecta, y deja la lista lista para la
-        // próxima vez sin marcas viejas colgando.
-        ClearMergeSelection();
-    }
-
-    private bool CanDeleteMarked() => MarkedForMergeCount > 0;
-
-    /// <summary>
-    /// "Borrar (N)" (FEATURE 4, 2026-07-17): reusa el mismo marcado de "Unir notas"
-    /// (<see cref="AudioItemVm.IsMarkedForMerge"/>) para borrar TODOS los audios marcados de una,
-    /// con confirmación. A diferencia de "Unir (N)", funciona con CUALQUIER audio marcado: no
-    /// exige mínimo de 2 ni que estén sincronizados (el borrado no toca el backend, solo el disco
-    /// local — ver <see cref="Workspace.DeleteAudios"/>). Mismo destino que un borrado individual
-    /// (<see cref="DeleteAudio"/>): papelera, nunca permanente.
-    /// </summary>
-    [RelayCommand(CanExecute = nameof(CanDeleteMarked))]
-    private void DeleteMarked()
+    [RelayCommand(CanExecute = nameof(CanDeleteSelectedFiles))]
+    private void DeleteSelectedFiles()
     {
         if (_workspace is null)
             return;
 
-        var marked = Projects.SelectMany(p => p.Audios).Where(a => a.IsMarkedForMerge).ToList();
-        if (marked.Count == 0)
+        var selected = _selectedProjectFiles;
+        if (selected.Count == 0)
             return;
 
-        if (!Confirm($"¿Borrar los {marked.Count} audios seleccionados? Van a la papelera."))
+        if (!Confirm($"¿Borrar los {selected.Count} audios seleccionados? Van a la papelera."))
             return;
 
         try
         {
             // Resuelve el proyecto dueño de cada audio ANTES de borrar (mismo criterio que
             // DeleteAudio -- por membresía real en Projects, no por SelectedProject).
-            var ownership = marked
+            var ownership = selected
                 .Select(a => (Project: Projects.FirstOrDefault(p => p.Audios.Contains(a)), Audio: a))
                 .Where(x => x.Project is not null)
                 .Select(x => (Project: x.Project!.Model, Audio: x.Audio.Model))
                 .ToList();
 
-            _workspace.DeleteAudios(marked.Select(a => a.Model));
+            _workspace.DeleteAudios(selected.Select(a => a.Model));
 
-            // Bugfix 2026-07-21 (bug #1): mismo seam que DeleteAudio -- registra un tombstone de
-            // sync por cada audio borrado, para que el próximo ciclo los pushee como borrados.
             SyncCoordinator.Instance.MarkAudiosDeletedForSync(ownership);
             SyncCoordinator.Instance.RequestSync();
 
-            if (SelectedAudio is not null && marked.Contains(SelectedAudio))
-                SelectedAudio = null;
-            IsMergeModeActive = false;
-            StatusMessage = $"Se borraron {marked.Count} audio(s).";
+            StatusMessage = $"Se borraron {selected.Count} audio(s).";
         }
         catch (Exception ex)
         {
@@ -1533,6 +1509,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // Siempre, incluso ante un fallo a mitad de camino (algún audio sí se movió a
             // .papelera/ antes de que otro tirara): el árbol tiene que reflejar lo que
             // efectivamente quedó en disco, no lo que se INTENTÓ borrar.
+            SetSelectedProjectFiles(Array.Empty<AudioItemVm>());
             RefreshAudios();
         }
     }

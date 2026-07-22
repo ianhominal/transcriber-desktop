@@ -413,10 +413,10 @@ public sealed class Workspace
     }
 
     /// <summary>
-    /// Borra una LISTA de audios de una (FEATURE 4, "Borrar seleccionados" — reusa los checkboxes
-    /// de "Unir notas", ver <c>MainViewModel.DeleteMarkedCommand</c>). Mismo destino que
-    /// <see cref="DeleteAudio"/> para cada uno (<c>.papelera/</c>, nunca borrado permanente) — a
-    /// diferencia de "Unir notas", acá no hace falta que los audios estén sincronizados.
+    /// Borra una LISTA de audios de una (multi-select nativo de la vista de proyecto, ver
+    /// <c>MainViewModel.DeleteSelectedFilesCommand</c>). Mismo destino que <see cref="DeleteAudio"/>
+    /// para cada uno (<c>.papelera/</c>, nunca borrado permanente) — no hace falta que los audios
+    /// estén sincronizados.
     /// </summary>
     public void DeleteAudios(IEnumerable<AudioItem> audios)
     {

@@ -4,9 +4,11 @@ using AudioTranscriber.App.ViewModels;
 namespace AudioTranscriber.App;
 
 /// <summary>
-/// "Unir notas" NATIVO: combina varias transcripciones ya elegidas en <c>MainWindow</c> en un solo
-/// documento generado por IA (ver <see cref="MergeNotesViewModel"/>, brief "Híbrido nativo"
-/// 2026-07-14). Abierta desde <c>MainViewModel.MergeSelectedCommand</c>.
+/// "Unir notas" NATIVO: combina varias transcripciones ya elegidas en un solo documento generado
+/// por IA (ver <see cref="MergeNotesViewModel"/>, brief "Híbrido nativo" 2026-07-14). Abierta desde
+/// "Combinar en documento", la acción del asistente de proyecto (ver
+/// <c>BrainViewModel.CombineIntoDocumentCommand</c>, feature 1.0.56) — el viejo modo checkbox de
+/// <c>MainWindow</c> que abría esta misma ventana se eliminó en el rediseño 2026-07-22.
 /// </summary>
 public partial class MergeNotesWindow : Window
 {

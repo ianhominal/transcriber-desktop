@@ -48,16 +48,6 @@ public partial class AudioItemVm : ObservableObject
     partial void OnRemoteIdChanged(string? value) => OnPropertyChanged(nameof(IsSyncedRemotely));
 
     /// <summary>
-    /// Marcado para "Unir notas" (ver <see cref="ViewModels.MainViewModel.MergeSelectedCommand"/>,
-    /// brief "Híbrido nativo" 2026-07-14): checkbox propio en vez de reusar la selección del árbol
-    /// (<see cref="IsSelected"/>) -- el árbol es single-select y ya está cableado a
-    /// SelectedAudio/OpenNoteDetail/etc, así que multi-marcar necesita un estado independiente que
-    /// no pise esa selección existente.
-    /// </summary>
-    [ObservableProperty]
-    private bool _isMarkedForMerge;
-
-    /// <summary>
     /// Fecha de creación LOCAL del .txt de transcript, usada como proxy de "cuándo se capturó la
     /// nota" para el "Resurfacing" (ver <see cref="AudioTranscriber.Core.Notes.ResurfaceCandidatePicker"/>).
     /// Null si todavía no hay transcript en disco. Misma limitación que documenta la web para su
