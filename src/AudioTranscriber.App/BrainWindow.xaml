@@ -41,9 +41,25 @@
                 </Grid.RowDefinitions>
 
                 <StackPanel Grid.Row="0" Margin="0,0,0,10">
-                    <TextBlock Text="Chat con IA" Style="{StaticResource TitleText}"/>
-                    <TextBlock Text="Alcance: todas mis notas. Preguntale a la IA: &quot;¿qué dije sobre X?&quot;, &quot;juntá mis ideas sobre Y&quot;."
+                    <TextBlock Text="{Binding HeaderTitle}" Style="{StaticResource TitleText}"/>
+                    <TextBlock Text="{Binding ScopeDescription}"
                                Style="{StaticResource CaptionText}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    <!-- Atajos de "Asistente del proyecto" (Resumir / Próximos pasos / Combinar en
+                         documento): solo visibles en el alcance de proyecto, ver
+                         BrainViewModel.ShowProjectQuickActions. "Combinar en documento" reusa
+                         MergeNotesWindow (ver BrainViewModel.CombineIntoDocumentCommand). -->
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0"
+                                Visibility="{Binding ShowProjectQuickActions, Converter={StaticResource BoolToVisibility}}">
+                        <Button Content="Resumir" Style="{StaticResource SecondaryButton}"
+                                Padding="10,4" FontSize="11" Margin="0,0,6,0"
+                                Command="{Binding SummarizeCommand}"/>
+                        <Button Content="Próximos pasos" Style="{StaticResource SecondaryButton}"
+                                Padding="10,4" FontSize="11" Margin="0,0,6,0"
+                                Command="{Binding NextStepsCommand}"/>
+                        <Button Content="Combinar en documento" Style="{StaticResource SecondaryButton}"
+                                Padding="10,4" FontSize="11"
+                                Command="{Binding CombineIntoDocumentCommand}"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- Región viva: mismo criterio ARIA "log" que NoteDetailWindow (se ACUMULA una

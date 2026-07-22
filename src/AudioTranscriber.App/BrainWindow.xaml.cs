@@ -25,4 +25,27 @@ public partial class BrainWindow : Window
         _viewModel.Messages.CollectionChanged += (_, _) =>
             Dispatcher.BeginInvoke(() => MessagesScroll.ScrollToEnd());
     }
+
+    /// <summary>
+    /// "Asistente del proyecto" (ver <see cref="BrainViewModel"/>, constructor con <c>projectId</c>):
+    /// abierta desde <c>MainViewModel.OpenProjectAssistantCommand</c> (nodo de un proyecto en el
+    /// árbol). Segunda ventana WPF-generada requiere su propio <c>InitializeComponent()</c> -- no
+    /// hay forma de encadenar constructores parciales de XAML entre sí para reusarlo.
+    /// </summary>
+    public BrainWindow(string projectId, string projectName, IReadOnlyList<(string RemoteId, string Title)> mergeCandidates)
+    {
+        InitializeComponent();
+
+        _viewModel = new BrainViewModel(projectId, projectName, mergeCandidates);
+        DataContext = _viewModel;
+
+        // El TextBlock del contenido ya está bindeado a HeaderTitle, pero el chrome de la ventana
+        // (Title del SO/taskbar y el TitleBar custom) es texto plano en el XAML -- sin esto se
+        // quedaría mostrando "Chat con IA" también en el alcance de proyecto.
+        Title = $"{_viewModel.HeaderTitle} — Audio Transcriber";
+        WindowTitleBar.TitleText = _viewModel.HeaderTitle;
+
+        _viewModel.Messages.CollectionChanged += (_, _) =>
+            Dispatcher.BeginInvoke(() => MessagesScroll.ScrollToEnd());
+    }
 }

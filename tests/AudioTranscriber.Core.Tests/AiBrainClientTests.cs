@@ -84,6 +84,16 @@ public class AiBrainClientTests
             body);
     }
 
+    [Fact]
+    public void BuildRequestBody_ConProjectId_AgregaProjectIdAlFinal()
+    {
+        var body = AiBrainClient.BuildRequestBody("m1", "Que dije sobre X?", "proj-1");
+
+        Assert.Equal(
+            """{"message":{"id":"m1","role":"user","parts":[{"type":"text","text":"Que dije sobre X?"}]},"projectId":"proj-1"}""",
+            body);
+    }
+
     // ---- BuildErrorMessage ----------------------------------------------------------------------
 
     [Theory]
@@ -151,6 +161,20 @@ public class AiBrainClientTests
         Assert.Contains("\"role\":\"user\"", handler.LastBody);
         Assert.Contains("\"text\":\"Que dije sobre X?\"", handler.LastBody);
         Assert.DoesNotContain("transcriptionId", handler.LastBody);
+    }
+
+    [Fact]
+    public async Task AskAsync_ConProjectId_LoMandaEnElBody()
+    {
+        var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new ChunkedStream(new[] { "data: [DONE]\n\n" })),
+        });
+        var client = new AiBrainClient(new HttpClient(handler), "https://backend.test/");
+
+        await client.AskAsync("Que dije sobre X?", "AT", onProgress: null, CancellationToken.None, projectId: "proj-1");
+
+        Assert.Contains("\"projectId\":\"proj-1\"", handler.LastBody);
     }
 
     [Fact]

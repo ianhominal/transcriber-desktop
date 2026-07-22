@@ -616,6 +616,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(DeleteProjectCommand))]
     [NotifyCanExecuteChangedFor(nameof(EditProjectMetaCommand))]
+    [NotifyCanExecuteChangedFor(nameof(OpenProjectAssistantCommand))]
     [NotifyCanExecuteChangedFor(nameof(RenameSelectedCommand))]
     [NotifyCanExecuteChangedFor(nameof(DeleteSelectedCommand))]
     // FEATURE 2 (2026-07-17): CanTranscribe() ahora también depende de SelectedProject (batch-
@@ -1144,16 +1145,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Resuelve <see cref="AudioItemVm.RemoteId"/> para cada audio del árbol recién construido,
-    /// leyendo el índice local de sync (<see cref="SyncIndex"/>, misma clase pública que ya usa
-    /// <see cref="SyncCoordinator.BuildSyncEngine"/> -- no se toca nada de Core/Sync acá, solo se
-    /// consume su API pública de solo lectura). Un item cuenta como "sincronizado" (RemoteId
-    /// asignado) solo si su id aparece en la BASELINE del último sync exitoso -- no alcanza con que
-    /// <see cref="LocalScanner"/> pueda calcularle un id determinístico, porque ese id todavía
-    /// podría no existir en el servidor (nota creada localmente, sync pendiente/offline/sin
-    /// login). Best-effort: cualquier error (índice corrupto, DB bloqueada, workspace recién
-    /// creado sin carpeta .synccache todavía) deja todos los RemoteId en null -- el botón "Abrir
-    /// con IA" queda deshabilitado, nunca rompe el refresh del árbol.
+    /// Resuelve <see cref="AudioItemVm.RemoteId"/> para cada audio Y <see cref="ProjectVm.RemoteId"/>
+    /// para cada proyecto del árbol recién construido, leyendo el índice local de sync
+    /// (<see cref="SyncIndex"/>, misma clase pública que ya usa <see cref="SyncCoordinator.BuildSyncEngine"/>
+    /// -- no se toca nada de Core/Sync acá, solo se consume su API pública de solo lectura). Un item
+    /// cuenta como "sincronizado" (RemoteId asignado) solo si su id aparece en la BASELINE del
+    /// último sync exitoso -- no alcanza con que <see cref="LocalScanner"/> pueda calcularle un id
+    /// determinístico, porque ese id todavía podría no existir en el servidor (nota/proyecto creado
+    /// localmente, sync pendiente/offline/sin login). Best-effort: cualquier error (índice
+    /// corrupto, DB bloqueada, workspace recién creado sin carpeta .synccache todavía) deja todos
+    /// los RemoteId en null -- el botón "Abrir con IA"/"Asistente del proyecto" queda deshabilitado,
+    /// nunca rompe el refresh del árbol.
     /// </summary>
     private void ResolveRemoteIds()
     {
@@ -1173,9 +1175,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     byTranscriptPath[entry.TranscriptPath] = entry.Id;
             }
 
+            // Mismo criterio que arriba (byTranscriptPath), pero para proyectos: solo cuenta como
+            // "sincronizado" si el id calculado por LocalScanner aparece en la baseline del último
+            // sync exitoso. FolderPath es la clave estable para calzar snapshot.Projects (indexado
+            // por id, no por carpeta) con cada ProjectVm -- LocalProjectEntry.FolderPath y
+            // ProjectVm.Model.FolderPath vienen del mismo Workspace.ListProjects(), así que son
+            // literalmente el mismo string.
+            var byProjectFolder = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in snapshot.Projects.Values)
+            {
+                if (baseline.ContainsKey(entry.Id))
+                    byProjectFolder[entry.FolderPath] = entry.Id;
+            }
+
             foreach (var p in Projects)
+            {
                 foreach (var a in p.Audios)
-                    a.RemoteId = byTranscriptPath.TryGetValue(a.TranscriptPath, out var id) ? id : null;
+                    a.RemoteId = byTranscriptPath.TryGetValue(a.TranscriptPath, out var trId) ? trId : null;
+                p.RemoteId = byProjectFolder.TryGetValue(p.Model.FolderPath, out var prId) ? prId : null;
+            }
         }
         catch
         {
@@ -1347,6 +1365,41 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private void OpenBrainWindow()
     {
         var window = new BrainWindow { Owner = Application.Current.MainWindow };
+        window.Show();
+    }
+
+    // ---- Asistente del proyecto (chat acotado a un proyecto + atajos + Combinar en documento) -----
+
+    private bool CanOpenProjectAssistant() => SelectedProject is { IsGeneral: false };
+
+    /// <summary>
+    /// Abre <see cref="BrainWindow"/> acotada al proyecto seleccionado (ver
+    /// <see cref="ChatScopeRouter.Project"/>), con los mismos atajos "Resumir"/"Próximos pasos" y
+    /// "Combinar en documento" que ya tiene la web. Requiere que el proyecto ya tenga
+    /// <see cref="ProjectVm.RemoteId"/> resuelto (ver <see cref="ResolveRemoteIds"/>): sin id
+    /// remoto no hay forma de acotar el retrieval del backend a ESTE proyecto -- mismo criterio
+    /// defensivo que <see cref="MergeSelected"/> con notas todavía no sincronizadas (avisa por
+    /// <see cref="StatusMessage"/> y no abre la ventana, en vez de mandar un id inválido).
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanOpenProjectAssistant))]
+    private void OpenProjectAssistant()
+    {
+        var project = SelectedProject;
+        if (project is null)
+            return;
+        if (project.RemoteId is not { } remoteId || string.IsNullOrEmpty(remoteId))
+        {
+            StatusMessage = "Este proyecto todavía no terminó de sincronizarse. Esperá un momento y volvé a intentar.";
+            return;
+        }
+
+        var mergeCandidates = project.Audios
+            .Where(a => a.RemoteId is not null)
+            .Take(AiMergeClient.MaxNoteCount)
+            .Select(a => (RemoteId: a.RemoteId!, Title: Path.GetFileNameWithoutExtension(a.FileName)))
+            .ToList();
+
+        var window = new BrainWindow(remoteId, project.Title, mergeCandidates) { Owner = Application.Current.MainWindow };
         window.Show();
     }
 

@@ -39,10 +39,18 @@ public sealed class AiBrainClient
     /// <c>src/app/api/brain/route.ts</c> (rechaza cualquier <c>role</c> que no sea "user"). Lógica
     /// pura, sin red; <paramref name="messageId"/> se recibe como parámetro (no se genera acá) para
     /// que sea determinística y testeable, mismo criterio que <see cref="AiChatClient.BuildRequestBody"/>.
+    ///
+    /// <paramref name="projectId"/> es opcional (default <see langword="null"/>): "Asistente del
+    /// proyecto" (ver <see cref="ChatScopeRouter.Project"/>) acota el retrieval a las notas de UN
+    /// proyecto, mismo campo <c>projectId</c> que ya usa la web (<c>src/lib/chat/projectActions.ts</c>).
+    /// Cuando es <see langword="null"/> el campo se OMITE del JSON (no se serializa como
+    /// <c>"projectId":null</c>): "Todas mis notas" sigue mandando exactamente el mismo body que
+    /// antes de este cambio.
     /// </summary>
-    public static string BuildRequestBody(string messageId, string question) =>
+    public static string BuildRequestBody(string messageId, string question, string? projectId = null) =>
         JsonSerializer.Serialize(new BrainRequestDto(
-            new BrainMessageDto(messageId, "user", new[] { new BrainMessagePartDto("text", question) })));
+            new BrainMessageDto(messageId, "user", new[] { new BrainMessagePartDto("text", question) }),
+            projectId));
 
     /// <summary>Mismo criterio de mensajes amigables en español que <see cref="AiChatClient.BuildErrorMessage"/>,
     /// adaptado al límite diario propio de "Segundo cerebro" (<c>kind: "brain"</c> en <c>ai_usage_log</c>).</summary>
@@ -77,9 +85,14 @@ public sealed class AiBrainClient
     /// <paramref name="onProgress"/> a medida que llegan los chunks <c>text-delta</c> del stream SSE
     /// (mismo criterio que <see cref="AiChatClient.SendMessageAsync"/>) y devuelve el texto completo
     /// al terminar. Sin historial: cada pregunta es independiente (ver header comment).
+    ///
+    /// <paramref name="projectId"/> opcional, AL FINAL de la lista de parámetros con default
+    /// <see langword="null"/> a propósito: no rompe ningún call site existente (posicional, 4
+    /// argumentos). Ver <see cref="BuildRequestBody"/> para el detalle de "Asistente del proyecto".
     /// </summary>
     public async Task<string> AskAsync(
-        string question, string accessToken, IProgress<string>? onProgress, CancellationToken ct)
+        string question, string accessToken, IProgress<string>? onProgress, CancellationToken ct,
+        string? projectId = null)
     {
         if (string.IsNullOrWhiteSpace(accessToken))
             throw new ArgumentException("Falta la sesión para usar el Chat con IA.", nameof(accessToken));
@@ -90,7 +103,7 @@ public sealed class AiBrainClient
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/brain");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        req.Content = new StringContent(BuildRequestBody(messageId, question), Encoding.UTF8, "application/json");
+        req.Content = new StringContent(BuildRequestBody(messageId, question, projectId), Encoding.UTF8, "application/json");
 
         HttpResponseMessage response;
         try
@@ -156,5 +169,8 @@ public sealed class AiBrainClient
         [property: JsonPropertyName("parts")] IReadOnlyList<BrainMessagePartDto> Parts);
 
     private sealed record BrainRequestDto(
-        [property: JsonPropertyName("message")] BrainMessageDto Message);
+        [property: JsonPropertyName("message")] BrainMessageDto Message,
+        [property: JsonPropertyName("projectId")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? ProjectId);
 }

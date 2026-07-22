@@ -22,12 +22,20 @@ public static class ChatScopeRouter
     public const string AllNotes = "all";
 
     /// <summary>
-    /// Mapeo PURO alcance -&gt; cliente (sin red, sin UI): true si <paramref name="scope"/>
-    /// corresponde al chat global (<see cref="AiBrainClient"/>), false si corresponde al chat por
-    /// nota (<see cref="AiChatClient"/>). Cualquier valor que no sea exactamente <see cref="AllNotes"/>
-    /// cae en "Esta nota" -- mismo criterio permisivo que el resto de los switches de este proyecto,
-    /// nunca tira por un valor inesperado. Lógica pura, extraída aparte para poder testearla sin
-    /// mockear <see cref="System.Net.Http.HttpClient"/> ni instanciar un ViewModel de WPF.
+    /// "Asistente del proyecto": retrieval acotado a las notas de UN proyecto (<see cref="AiBrainClient"/>,
+    /// mismo cliente/protocolo que <see cref="AllNotes"/>, solo que con <c>projectId</c> seteado --
+    /// ver <c>AiBrainClient.BuildRequestBody</c>).
     /// </summary>
-    public static bool UsesGlobalBrainClient(string scope) => scope == AllNotes;
+    public const string Project = "project";
+
+    /// <summary>
+    /// Mapeo PURO alcance -&gt; cliente (sin red, sin UI): true si <paramref name="scope"/>
+    /// corresponde al chat global (<see cref="AiBrainClient"/>, ya sea "todas mis notas" o "este
+    /// proyecto"), false si corresponde al chat por nota (<see cref="AiChatClient"/>). Cualquier
+    /// valor que no sea exactamente <see cref="AllNotes"/> o <see cref="Project"/> cae en "Esta
+    /// nota" -- mismo criterio permisivo que el resto de los switches de este proyecto, nunca tira
+    /// por un valor inesperado. Lógica pura, extraída aparte para poder testearla sin mockear
+    /// <see cref="System.Net.Http.HttpClient"/> ni instanciar un ViewModel de WPF.
+    /// </summary>
+    public static bool UsesGlobalBrainClient(string scope) => scope == AllNotes || scope == Project;
 }

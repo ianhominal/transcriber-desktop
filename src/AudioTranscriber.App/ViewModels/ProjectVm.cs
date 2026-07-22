@@ -34,6 +34,19 @@ public partial class ProjectVm : ObservableObject
     [ObservableProperty]
     private bool _isSelected;
 
+    /// <summary>
+    /// Id remoto (Supabase) de este proyecto, CONFIRMADO por el último sync exitoso (ver
+    /// <see cref="ViewModels.MainViewModel"/>, método privado <c>ResolveRemoteIds</c> que resuelve
+    /// esto tras cada <c>RefreshAudios</c> usando la baseline de <c>SyncIndex</c> -- mismo criterio
+    /// que <see cref="AudioItemVm.RemoteId"/>, pero contra <c>LocalSnapshot.Projects</c> en vez de
+    /// <c>Transcriptions</c>). Null cuando el proyecto todavía no se sincronizó nunca: la UI usa
+    /// esto para deshabilitar "Asistente del proyecto" (no existe id remoto confiable todavía).
+    /// Siempre null para el proyecto "General" (<see cref="IsGeneral"/>): no tiene contraparte en
+    /// <c>projects</c> del backend.
+    /// </summary>
+    [ObservableProperty]
+    private string? _remoteId;
+
     public ObservableCollection<AudioItemVm> Audios { get; } = new();
 
     public ProjectVm(AudioProject model)

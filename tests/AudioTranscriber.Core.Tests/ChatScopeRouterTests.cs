@@ -12,6 +12,10 @@ public class ChatScopeRouterTests
     public void UsesGlobalBrainClient_AlcanceEstaNota_False() =>
         Assert.False(ChatScopeRouter.UsesGlobalBrainClient(ChatScopeRouter.ThisNote));
 
+    [Fact]
+    public void UsesGlobalBrainClient_AlcanceEsteProyecto_True() =>
+        Assert.True(ChatScopeRouter.UsesGlobalBrainClient(ChatScopeRouter.Project));
+
     [Theory]
     [InlineData("")]
     [InlineData("cualquier-otra-cosa")]
