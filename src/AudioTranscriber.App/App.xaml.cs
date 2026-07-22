@@ -150,15 +150,19 @@ public partial class App : Application
                 // OnMainWindowClosing's Hide() below — a hidden-but-shown window counts as "open".
                 // WindowState=Minimized + ShowInTaskbar=false BEFORE Show() is extra insurance
                 // against a visible flash (the window never gets a normal on-screen paint pass);
-                // Hide() right after removes it from the screen/taskbar entirely. Both are reset
-                // back to Normal/true immediately after so a later restore from the tray
-                // (TrayIconService.OpenApp) shows a normal window again, not a minimized one stuck
-                // outside the taskbar.
+                // Hide() right after removes it from the screen/taskbar entirely.
+                //
+                // restoredState is captured BEFORE the Minimized dip below, not hardcoded to Normal:
+                // MainWindow's constructor already set WindowState from the saved window state (see
+                // WindowBoundsPersistence.Apply) — could be Maximized. Restoring THAT value instead
+                // of always Normal is what lets "show from tray" (TrayIconService.OpenApp) later
+                // reopen into the state the user actually left the app in, not always Normal.
+                var restoredState = window.WindowState;
                 window.WindowState = WindowState.Minimized;
                 window.ShowInTaskbar = false;
                 window.Show();
                 window.Hide();
-                window.WindowState = WindowState.Normal;
+                window.WindowState = restoredState;
                 window.ShowInTaskbar = true;
                 StartupLogger.Log("MainWindow created and started minimized to tray (--minimized).");
             }
@@ -278,6 +282,13 @@ public partial class App : Application
 
         if (action == WindowCloseAction.Exit)
         {
+            // Guarda tamaño/posición/estado de la ventana SOLO acá (cierre real, no en cada
+            // minimizado a la bandeja de la rama de abajo) — ver WindowBoundsPersistence.Save. Tiene
+            // que correr ANTES de que la ventana termine de cerrarse (evento Closing, no Closed): en
+            // Closed los bounds ya no son válidos.
+            if (MainWindow is not null)
+                WindowBoundsPersistence.Save(MainWindow);
+
             // Salida real (pedida desde "Salir" o porque el setting está apagado): liberamos acá
             // (antes de que la ventana termine de cerrarse) grabación/reproducción/watcher/timers
             // en curso. NO se llama al minimizar a la bandeja (ver rama de abajo): ahí la app sigue

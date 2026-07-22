@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+
+  <assemblyIdentity version="1.0.0.0" name="AudioTranscriber.App.app"/>
+
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows Vista/7/8/8.1/10/11: declarados para que el SO no aplique compatibility shims
+           (escalado/estilos viejos) pensados para apps que no se declaran compatibles con
+           versiones nuevas de Windows. -->
+      <supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}"/> <!-- Vista -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/> <!-- 7 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/> <!-- 8 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/> <!-- 8.1 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/> <!-- 10 / 11 -->
+    </application>
+  </compatibility>
+
+  <!-- DPI Per-Monitor V2: la ventana escala correctamente cuando se la arrastra entre monitores
+       con distinto DPI (ej. laptop 150% + monitor externo 100%), en vez del comportamiento
+       "System" default de WPF (renderiza al DPI del monitor primario en el arranque y queda
+       borrosa/mal escalada en cualquier otro). Dos <asmv3:windowsSettings> con el MISMO namespace
+       padre (asmv3:application) pero DISTINTO xmlns default cada uno: es el patrón documentado
+       por Microsoft, no una duplicación por error: dpiAware (legado, 2005) da compatibilidad hacia
+       atrás con versiones de Windows/.NET que no entienden dpiAwareness (2016); en Windows 10 1703+
+       con Per-Monitor V2 disponible, dpiAwareness gana. El fallback "PerMonitor, System" cubre
+       versiones de Windows más viejas que no soportan V2. -->
+  <asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+    <asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+      <dpiAware>true/pm</dpiAware>
+    </asmv3:windowsSettings>
+    <asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+      <dpiAwareness>PerMonitorV2, PerMonitor, System</dpiAwareness>
+    </asmv3:windowsSettings>
+  </asmv3:application>
+
+</assembly>

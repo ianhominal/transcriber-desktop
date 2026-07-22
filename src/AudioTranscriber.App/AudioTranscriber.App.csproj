@@ -68,8 +68,23 @@
     -->
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>appicon.ico</ApplicationIcon>
+    <!-- Per-Monitor V2 DPI awareness (ver app.manifest para el porqué): no reemplaza nada, solo se
+         suma al ApplicationIcon/StartupObject de arriba. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!--
+      WFAC010 ("Remove high DPI settings from app.manifest, use Application.SetHighDpiMode /
+      ApplicationHighDpiMode instead") is a false positive here: it's a WinForms-only analyzer that
+      fires simply because UseWindowsForms=true (needed ONLY for the tray icon's NotifyIcon, see the
+      comment on that property above; this app never calls System.Windows.Forms.Application.Run).
+      Its suggested fix is a WinForms API that does nothing for a WPF window's DPI handling; the
+      app.manifest dpiAwareness declaration IS the correct, documented mechanism for WPF
+      (https://learn.microsoft.com/dotnet/desktop/wpf/advanced/high-dpi-support-in-wpf). Suppressed
+      instead of "fixed" so nobody applies that WinForms-only suggestion later and silently breaks
+      Per-Monitor V2 for the actual WPF window.
+    -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <AssemblyName>AudioTranscriber</AssemblyName>
-    <Version>1.0.57</Version>
+    <Version>1.0.58</Version>
     <StartupObject>AudioTranscriber.App.App</StartupObject>
   </PropertyGroup>
 

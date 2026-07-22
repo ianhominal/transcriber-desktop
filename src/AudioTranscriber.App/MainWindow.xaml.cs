@@ -15,6 +15,13 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        // Restaura tamaño/posición/estado guardados del último cierre real (o calcula un tamaño
+        // inicial proporcional al monitor si es el primer arranque) — ver WindowBoundsPersistence.
+        // DEBE correr acá, antes de que App.xaml.cs llame a Show()/el flujo de arranque minimizado
+        // a bandeja: WindowStartupLocation pasa a Manual adentro de Apply, así que si esto corriera
+        // después de mostrar la ventana ya sería tarde para reposicionarla sin flash visible.
+        WindowBoundsPersistence.Apply(this);
+
         // Sets the window's small icon (Alt-Tab thumbnail, etc.) to match the custom title bar's
         // icon — see AppIconLoader for why this isn't a pack URI. The taskbar/exe icon itself
         // already comes from <ApplicationIcon> in the csproj, so this is purely cosmetic polish.

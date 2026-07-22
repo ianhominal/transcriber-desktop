@@ -121,6 +121,32 @@ public sealed class AppSettings
     /// </summary>
     public List<string> ResurfaceDismissedIds { get; set; } = new();
 
+    /// <summary>
+    /// "Normal" | "Maximized" -- estado de MainWindow al momento del último cierre REAL (nunca al
+    /// minimizar a la bandeja, ver <see cref="AudioTranscriber.App.WindowBoundsPersistence.Save"/>).
+    /// Solo tiene efecto si <see cref="WindowWidth"/>/<see cref="WindowHeight"/>/
+    /// <see cref="WindowLeft"/>/<see cref="WindowTop"/> también están seteados -- ver
+    /// <see cref="AudioTranscriber.App.WindowBoundsPersistence.Apply"/>.
+    /// </summary>
+    public string WindowState { get; set; } = "Normal";
+
+    /// <summary>
+    /// Tamaño/posición de MainWindow al momento del último cierre real. <c>null</c> en los 4 campos
+    /// = todavía no se guardó nada (primer arranque, ver
+    /// <see cref="AudioTranscriber.App.WindowBoundsPersistence"/> e
+    /// <see cref="AudioTranscriber.Core.Ui.InitialWindowSizer"/>). Si <see cref="WindowState"/> era
+    /// "Maximized", estos 4 campos NO son el tamaño de pantalla completa: son el
+    /// <c>Window.RestoreBounds</c> -- el tamaño "ventana" al que volvería al desmaximizar -- así que
+    /// desmaximizar en el próximo arranque queda bien.
+    /// </summary>
+    public double? WindowWidth { get; set; }
+
+    public double? WindowHeight { get; set; }
+
+    public double? WindowLeft { get; set; }
+
+    public double? WindowTop { get; set; }
+
     private static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "AudioTranscriber", "settings.json");

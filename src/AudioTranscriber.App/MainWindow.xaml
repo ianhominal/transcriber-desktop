@@ -1,3 +1,8 @@
+<!-- Height/Width de abajo son solo el default de diseño (Visual Studio designer/primer paint antes
+     de que corra el code-behind): el constructor de MainWindow.xaml.cs llama a
+     WindowBoundsPersistence.Apply(this), que los pisa siempre (con el tamaño/posición guardados
+     del último cierre, o uno calculado con InitialWindowSizer en el primer arranque) antes de
+     cualquier Show(). MinHeight/MinWidth SÍ son el mínimo real que se respeta en todos los casos. -->
 <Window x:Class="AudioTranscriber.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"

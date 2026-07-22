@@ -231,7 +231,16 @@ public sealed class TrayIconService : IDisposable
         void Restore()
         {
             _mainWindow.Show();
-            _mainWindow.WindowState = WindowState.Normal;
+
+            // Solo se fuerza a Normal si estaba Minimized (p.ej. el usuario la minimizó a mano
+            // antes de cerrarla a la bandeja) — Minimized no es un estado presentable al reabrir.
+            // Maximized/Normal se dejan TAL CUAL: es el estado que WindowBoundsPersistence.Apply
+            // restauró al construir la ventana (el guardado del último cierre real), y forzar acá a
+            // Normal siempre lo pisaría, mostrando siempre una ventana normal aunque el usuario la
+            // hubiera dejado maximizada.
+            if (_mainWindow.WindowState == WindowState.Minimized)
+                _mainWindow.WindowState = WindowState.Normal;
+
             _mainWindow.Activate();
         }
 
