@@ -587,14 +587,16 @@
                                  Configuración). Antes el motor Local usaba siempre el modelo más
                                  chico de Whisper, sin forma de elegir otro; ver LocalModelOptions
                                  (Core) para el catálogo y MainViewModel.OnLocalModelIdChanged para
-                                 qué pasa al cambiarlo. Deshabilitado mientras IsBusy: cambiarlo en
-                                 medio de una transcripción soltaría el modelo que ese trabajo
-                                 todavía está usando en otro hilo. -->
+                                 qué pasa al cambiarlo. Deshabilitado mientras IsBusyOrTranscribing
+                                 (refactor de concurrencia 2026-07-27, antes solo IsBusy: ahora
+                                 transcribir ya NO prende IsBusy, ver MainViewModel.IsTranscribing):
+                                 cambiarlo en medio de una descarga O una transcripción soltaría el
+                                 modelo que ese trabajo todavía está usando en otro hilo. -->
                             <StackPanel Grid.Column="2" Visibility="{Binding IsGroq, Converter={StaticResource InverseBoolToVisibility}}">
                                 <TextBlock Text="Modelo" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="2,0,0,4"/>
                                 <ComboBox FontSize="12" SelectedValuePath="Tag"
                                           SelectedValue="{Binding LocalModelId}"
-                                          IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolean}}"
+                                          IsEnabled="{Binding IsBusyOrTranscribing, Converter={StaticResource InverseBoolean}}"
                                           ToolTip="Un modelo más grande transcribe mejor el español, pero tarda más y pesa más para descargar."
                                           AutomationProperties.Name="Modelo local de Whisper">
                                     <ComboBoxItem Content="Rápido (167 MB)" Tag="small"/>
@@ -645,16 +647,31 @@
                          terminó bajando 1,5 GB sin necesidad. ShowOnDisabled para que el motivo se
                          lea con el botón apagado, que es cuando importa. Fuera del ScrollViewer de
                          la Row 3 a propósito: la acción primaria del producto no puede depender de
-                         que el usuario scrollee para encontrarla. -->
+                         que el usuario scrollee para encontrarla.
+
+                         Refactor de concurrencia (2026-07-27): "Transcribir" ya NO se oculta
+                         mientras algo corre: tocarlo ahora ENCOLA en vez de bloquearse (ver
+                         MainViewModel.RequestTranscribe), así que se deja siempre visible y su
+                         propio CanExecute (audio/proyecto elegido + motor disponible) sigue
+                         gobernando si está habilitado. "Cancelar" pasa a mostrarse junto a él
+                         (IsBusyOrTranscribing: hay una descarga o una transcripción/cola corriendo)
+                         en vez de reemplazarlo, y debajo se suma cuántos audios esperan turno. -->
                     <StackPanel Grid.Row="4" Margin="0,10,0,0">
                         <Button Content="Transcribir" Style="{StaticResource PrimaryButton}"
                                 Command="{Binding TranscribeCommand}"
                                 ToolTipService.ShowOnDisabled="True"
-                                ToolTip="{Binding TranscribeDisabledReason}"
-                                Visibility="{Binding IsBusy, Converter={StaticResource InverseBoolToVisibility}}"/>
+                                ToolTip="{Binding TranscribeDisabledReason}"/>
                         <Button Content="Cancelar" Style="{StaticResource SecondaryButton}"
                                 Command="{Binding CancelCommand}"
-                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"/>
+                                Margin="0,8,0,0"
+                                Visibility="{Binding IsBusyOrTranscribing, Converter={StaticResource BoolToVisibility}}"/>
+                        <!-- "N en cola": simple, sin vista aparte (brief), solo visible con algo
+                             esperando turno detrás del que se está transcribiendo ahora mismo (ese
+                             progreso ya se ve en el footer: StatusMessage + la barra de
+                             TranscribePercent). -->
+                        <TextBlock Text="{Binding QueueStatusText}" FontSize="12" Margin="0,6,0,0"
+                                   Foreground="{DynamicResource TextMuted}"
+                                   Visibility="{Binding QueuedTranscriptionCount, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -1070,9 +1087,13 @@
                            FontSize="12"
                            Visibility="{Binding InventoryText, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
 
+                <!-- Cronómetro de la transcripción en curso (ElapsedText/_elapsedSw solo se tocan
+                     en TranscribeAudioAsync, ver MainViewModel): bindeado a IsTranscribing, no a
+                     IsBusy (refactor de concurrencia 2026-07-27), porque IsBusy ahora es solo
+                     descargas y este cronómetro nunca corrió durante una descarga. -->
                 <Border Grid.Column="2" Margin="10,0" Padding="10,4" CornerRadius="6"
                         Background="{DynamicResource SurfaceAlt}" VerticalAlignment="Center"
-                        Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}">
+                        Visibility="{Binding IsTranscribing, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Text="{Binding ElapsedText}" VerticalAlignment="Center"
                                    FontFamily="{StaticResource AppFontMono}" FontWeight="SemiBold"

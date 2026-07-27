@@ -32,21 +32,39 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _cts;
 
     /// <summary>
-    /// True mientras <see cref="TranscribeProjectAsync"/> está corriendo (FEATURE 2, 2026-07-17).
-    /// Evita un segundo click en "Transcribir" durante los huecos entre audios del lote, donde
-    /// <see cref="IsBusy"/> vuelve a false por un instante (cada audio maneja su propio IsBusy en
-    /// <see cref="TranscribeSelectedAudioAsync"/>, sin cambios de esa lógica — ver el comentario
-    /// largo de TranscribeProjectAsync).
+    /// Cola de audios pendientes de transcribir (refactor de concurrencia, 2026-07-27: tocar
+    /// "Transcribir" sobre otro audio mientras uno ya corre ENCOLA en vez de bloquear el botón, y
+    /// se procesan de a uno). Generaliza lo que antes era <c>TranscribeProjectAsync</c> (loop con
+    /// await secuencial reusando <see cref="SelectedAudio"/> como paso intermedio, un wart
+    /// documentado) — ahora tanto un click suelto como "transcribir todo el proyecto" empujan acá,
+    /// y un único worker (<see cref="TryStartNextQueuedTranscription"/>) procesa de a uno.
+    ///
+    /// Clave = <c>AudioItemVm.FullPath</c>, NO la instancia: <see cref="RefreshAudios"/> reconstruye
+    /// TODAS las instancias de <c>AudioItemVm</c> en cada refresh (ver ese método), así que comparar
+    /// por ruta es lo único estable mientras un audio espera turno en la cola.
     /// </summary>
-    private bool _isBatchTranscribing;
+    private readonly TranscriptionQueue<string, AudioItemVm> _transcriptionQueue = new();
 
     /// <summary>
-    /// Se prende desde <see cref="Cancel"/> (botón "Cancelar") y lo lee <see cref="TranscribeProjectAsync"/>
-    /// para cortar el lote entre un audio y el siguiente — <see cref="_cts"/> ya se cancela y se
-    /// libera por cada audio individual (ver TranscribeSelectedAudioAsync), así que por sí solo no
-    /// alcanza para saber si había un lote en curso que además haya que frenar.
+    /// Ruta del audio que el worker de la cola está transcribiendo AHORA MISMO, o null si no hay
+    /// nada corriendo. Deliberadamente separado de <see cref="SelectedAudio"/> (arregla el wart de
+    /// <c>TranscribeProjectAsync</c>: clickear otro nodo del árbol mientras la cola corre ya NO pisa
+    /// la transcripción en curso) — ver <see cref="TranscribeAudioAsync"/>, que solo refleja el
+    /// streaming en vivo en <see cref="TranscriptText"/> cuando el audio en curso además coincide
+    /// con el seleccionado.
     /// </summary>
-    private bool _batchCancelRequested;
+    private string? _activeTranscriptionPath;
+
+    /// <summary>
+    /// True si el último <see cref="Cancel"/> vació una cola que tenía audios esperando -- lo leen
+    /// (y apagan) los catch de <c>OperationCanceledException</c> de
+    /// <see cref="TranscribeAudioAsync"/>/<see cref="DownloadModelAsync"/>/<see cref="DownloadDiarizationModelsAsync"/>
+    /// para que el StatusMessage final diga "cola vaciada" (ver brief). Sin esto, <see cref="Cancel"/>
+    /// podría poner un StatusMessage claro y que el catch de la cancelación real lo pisara medio
+    /// segundo después con un mensaje más pobre -- <c>_cts.Cancel()</c> es asincrónico, el catch que
+    /// corresponda corre DESPUÉS de que Cancel() ya volvió.
+    /// </summary>
+    private bool _queueWasClearedByCancel;
 
     /// <summary>
     /// Único punto de verdad sobre el modelo GGML local (Whisper) SELECCIONADO: existe/no existe en
@@ -441,7 +459,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     public bool ShowDownloadModelBanner => !IsGroq && !IsLocalModelAvailable && !IsDownloading;
 
-    private bool CanDownloadModel() => !IsBusy && !IsDownloading && !IsLocalModelAvailable;
+    // !IsTranscribing (refactor de concurrencia, 2026-07-27): descargar el modelo y transcribir
+    // comparten _cts (ver el campo) -- ya no pueden solaparse ahora que "Transcribir" no espera a
+    // que termine una descarga para encolarse. Si hay una transcripción corriendo, la descarga
+    // queda deshabilitada hasta que termine (mismo criterio que antes con IsBusy, pero acotado a lo
+    // que de verdad comparte el recurso).
+    private bool CanDownloadModel() => !IsBusy && !IsTranscribing && !IsDownloading && !IsLocalModelAvailable;
 
     /// <summary>
     /// Único camino para bajar el modelo local: explícito (botón propio), previo a grabar/
@@ -475,7 +498,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Descarga del modelo cancelada.";
+            StatusMessage = _queueWasClearedByCancel
+                ? "Descarga cancelada, cola de transcripción vaciada."
+                : "Descarga del modelo cancelada.";
+            _queueWasClearedByCancel = false;
         }
         catch (Exception ex)
         {
@@ -494,6 +520,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(TranscribeDisabledReason));
             TranscribeCommand.NotifyCanExecuteChanged();
             DownloadModelCommand.NotifyCanExecuteChanged();
+
+            // La descarga tenía _cts (ver comentario de CanDownloadModel): si se encoló algo
+            // mientras tanto, recién ahora queda libre el turno para arrancarlo.
+            TryStartNextQueuedTranscription();
         }
     }
 
@@ -518,7 +548,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public bool ShowDownloadDiarizationModelsBanner =>
         UseDiarization && !IsDiarizationModelAvailable && !IsDownloading;
 
-    private bool CanDownloadDiarizationModels() => !IsBusy && !IsDownloading && !IsDiarizationModelAvailable;
+    // Mismo criterio que CanDownloadModel de arriba (comparten _cts con la transcripción).
+    private bool CanDownloadDiarizationModels() => !IsBusy && !IsTranscribing && !IsDownloading && !IsDiarizationModelAvailable;
 
     /// <summary>
     /// Baja el/los modelo/s de identificación de hablantes que falten. Reusa IsBusy/IsDownloading/
@@ -551,7 +582,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Descarga de los modelos de identificación de hablantes cancelada.";
+            StatusMessage = _queueWasClearedByCancel
+                ? "Descarga cancelada, cola de transcripción vaciada."
+                : "Descarga de los modelos de identificación de hablantes cancelada.";
+            _queueWasClearedByCancel = false;
         }
         catch (Exception ex)
         {
@@ -564,6 +598,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             DownloadPercent = 0;
             _cts?.Dispose();
             _cts = null;
+
+            // Mismo motivo que en DownloadModelAsync: liberar _cts puede destrabar una
+            // transcripción encolada mientras esta descarga corría.
+            TryStartNextQueuedTranscription();
 
             OnPropertyChanged(nameof(IsDiarizationModelAvailable));
             OnPropertyChanged(nameof(ShowDownloadDiarizationModelsBanner));
@@ -801,20 +839,49 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _inventoryText = string.Empty;
 
+    /// <summary>
+    /// Ocupado con algo que NO es transcribir (por ahora: solo descargar modelos, ver
+    /// DownloadModelAsync/DownloadDiarizationModelsAsync). Antes también representaba "transcribiendo"
+    /// -- ver <see cref="IsTranscribing"/> (refactor de concurrencia, 2026-07-27) para ese estado,
+    /// ahora desacoplado a propósito: grabar ya no se bloquea por transcripción, así que hacía falta
+    /// distinguir "ocupado con una descarga" (sigue bloqueando abrir otra carpeta / cambiar de
+    /// modelo / grabar) de "transcribiendo" (que ahora corre en paralelo a grabar). Ver
+    /// <see cref="IsBusyOrTranscribing"/> para los pocos lugares que necesitan "cualquiera de los dos".
+    /// </summary>
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(TranscribeCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenWorkspaceCommand))]
     [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
     [NotifyCanExecuteChangedFor(nameof(DownloadModelCommand))]
     [NotifyCanExecuteChangedFor(nameof(DownloadDiarizationModelsCommand))]
-    [NotifyPropertyChangedFor(nameof(IsTranscribing))]
-    [NotifyPropertyChangedFor(nameof(TranscribeIndeterminate))]
+    [NotifyPropertyChangedFor(nameof(IsBusyOrTranscribing))]
     [NotifyPropertyChangedFor(nameof(TaskbarState))]
-    [NotifyPropertyChangedFor(nameof(TranscribeDisabledReason))]
     private bool _isBusy;
 
-    /// <summary>Ocupado transcribiendo (no descargando): barra indeterminada.</summary>
-    public bool IsTranscribing => IsBusy && !IsDownloading;
+    /// <summary>
+    /// True mientras el worker de la cola de transcripción (<see cref="TryStartNextQueuedTranscription"/>)
+    /// está efectivamente transcribiendo un audio -- dedicado, ya NO derivado de <see cref="IsBusy"/>
+    /// (refactor de concurrencia, 2026-07-27: grabar un audio mientras se transcribe otro, y encolar
+    /// en vez de bloquear "Transcribir"). Maneja la barra indeterminada/el cronómetro/el botón
+    /// Cancelar de la transcripción; <see cref="IsBusy"/> queda solo para las descargas.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(OpenWorkspaceCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DownloadModelCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DownloadDiarizationModelsCommand))]
+    [NotifyPropertyChangedFor(nameof(IsBusyOrTranscribing))]
+    [NotifyPropertyChangedFor(nameof(TranscribeIndeterminate))]
+    [NotifyPropertyChangedFor(nameof(TaskbarState))]
+    private bool _isTranscribing;
+
+    /// <summary>
+    /// True si hay CUALQUIER operación en curso que comparte recursos que no deben tocarse desde
+    /// otro lado mientras corre (<c>_cts</c>/<c>_service</c>/<c>_workspace</c>): una descarga
+    /// (<see cref="IsBusy"/>) o una transcripción (<see cref="IsTranscribing"/>). Reemplaza los usos
+    /// de <c>IsBusy</c> que antes colaban "y también transcribiendo" gratis -- ver
+    /// <see cref="CanOpen"/> y el selector de modelo local en MainWindow.xaml.
+    /// </summary>
+    public bool IsBusyOrTranscribing => IsBusy || IsTranscribing;
 
     // ---- Progreso en la barra de tareas de Windows ----------------------
 
@@ -823,7 +890,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>Estado de la barra de tareas: normal (con %), indeterminado o ninguno.</summary>
     public System.Windows.Shell.TaskbarItemProgressState TaskbarState =>
-        !IsBusy ? System.Windows.Shell.TaskbarItemProgressState.None
+        !IsBusyOrTranscribing ? System.Windows.Shell.TaskbarItemProgressState.None
         : TaskbarProgress > 0 ? System.Windows.Shell.TaskbarItemProgressState.Normal
         : System.Windows.Shell.TaskbarItemProgressState.Indeterminate;
 
@@ -839,14 +906,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>True mientras se descarga el modelo (barra determinada con %).</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsTranscribing))]
-    [NotifyPropertyChangedFor(nameof(TranscribeIndeterminate))]
     [NotifyPropertyChangedFor(nameof(TaskbarProgress))]
     [NotifyPropertyChangedFor(nameof(TaskbarState))]
     [NotifyPropertyChangedFor(nameof(ShowDownloadModelBanner))]
     [NotifyPropertyChangedFor(nameof(ShowDownloadDiarizationModelsBanner))]
     [NotifyCanExecuteChangedFor(nameof(DownloadModelCommand))]
     [NotifyCanExecuteChangedFor(nameof(DownloadDiarizationModelsCommand))]
+    // CanToggleRecording/CanToggleMeetingRecording (refactor de concurrencia, 2026-07-27) ahora
+    // solo bloquean grabar mientras se DESCARGA un modelo, no mientras se transcribe -- ver esos
+    // métodos más abajo.
+    [NotifyCanExecuteChangedFor(nameof(ToggleRecordingCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ToggleMeetingRecordingCommand))]
     private bool _isDownloading;
 
     /// <summary>Porcentaje de descarga del modelo (0–100).</summary>
@@ -887,7 +957,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     // ---- Abrir workspace ------------------------------------------------
 
-    private bool CanOpen() => !IsBusy && !IsRecording;
+    // !IsTranscribing (vía IsBusyOrTranscribing, refactor de concurrencia 2026-07-27): abrir OTRA
+    // carpeta reasigna _workspace, y una transcripción en curso (ahora en paralelo a grabar) sigue
+    // escribiendo contra el _workspace VIEJO -- este guard evita esa carrera, mismo criterio que ya
+    // protegía IsBusy cuando incluía "transcribiendo".
+    private bool CanOpen() => !IsBusyOrTranscribing && !IsRecording;
 
     /// <summary>
     /// Único selector de carpeta de toda la app (antes había uno acá y otro en SyncWindow, cada
@@ -1816,61 +1890,70 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // que el modelo ya esté descargado -- ver la región "Descarga del modelo local" más arriba
     // para el diagnóstico completo del bug que esto resuelve. La rama de proyecto (SelectedAudio
     // null + SelectedProject con pendientes) es FEATURE 2 -- ver HasPendingProjectAudios arriba y
-    // TranscribeProjectAsync más abajo. _isBatchTranscribing bloquea un segundo click mientras un
-    // lote ya está corriendo (IsBusy solo, un solo Audio del lote, no del lote completo).
+    // EnqueueProject más abajo.
+    //
+    // Refactor de concurrencia (2026-07-27): YA NO depende de IsBusy/IsTranscribing/IsRecording --
+    // tocar "Transcribir" con algo ya corriendo ENCOLA (ver RequestTranscribe) en vez de estar
+    // deshabilitado, así que ninguno de esos tres bloquea más el botón.
     private bool CanTranscribe() =>
-        !IsBusy && !IsRecording && !_isBatchTranscribing && (IsGroq || IsLocalModelAvailable) &&
+        (IsGroq || IsLocalModelAvailable) &&
         (SelectedAudio is { HasAudio: true }
             || (SelectedAudio is null && SelectedProject is not null && HasPendingProjectAudios(SelectedProject)));
 
     /// <summary>
     /// Motivo REAL por el que "Transcribir" está apagado (o null si está prendido). Espeja
-    /// exactamente las condiciones de <see cref="CanTranscribe"/>, priorizando el bloqueo más
-    /// barato de resolver — ver TranscribeGateFormatter para el bug que esto arregla (el tooltip
-    /// era un string fijo que culpaba al modelo local aunque el bloqueo real fuese otro, y mandó a
-    /// una usuaria a descargar 1,5 GB al pedo). <c>hasPendingProjectAudios</c> (FEATURE 2) evita
-    /// que este tooltip diga "Elegí un audio" con un proyecto batch-transcribible ya elegido.
+    /// <see cref="CanTranscribe"/> -- ver TranscribeGateFormatter para el bug que esto arregla (el
+    /// tooltip era un string fijo que culpaba al modelo local aunque el bloqueo real fuese otro).
+    /// isBusy/isRecording van fijos en false (refactor de concurrencia 2026-07-27): ya no son
+    /// motivo de bloqueo acá, así que TranscribeGateFormatter nunca reporta esas dos ramas desde
+    /// este caller -- se deja la función de Core intacta (sigue cubierta por sus propios tests) en
+    /// vez de tocar su firma por un solo caller.
     /// </summary>
     public string? TranscribeDisabledReason => TranscribeGateFormatter.DisabledReason(
-        IsBusy || _isBatchTranscribing, IsRecording, SelectedAudio is { HasAudio: true }, IsGroq, IsLocalModelAvailable,
+        isBusy: false, isRecording: false, SelectedAudio is { HasAudio: true }, IsGroq, IsLocalModelAvailable,
         hasPendingProjectAudios: SelectedAudio is null && SelectedProject is not null && HasPendingProjectAudios(SelectedProject));
 
     /// <summary>
-    /// Punto de entrada de "Transcribir" (botón/comando): despacha a transcripción de UN audio
-    /// (comportamiento de siempre, <see cref="TranscribeSelectedAudioAsync"/>) o de un PROYECTO
-    /// entero (FEATURE 2, 2026-07-17, <see cref="TranscribeProjectAsync"/>) según qué haya
-    /// seleccionado — ver <see cref="CanTranscribe"/> arriba para las condiciones exactas de cada
-    /// rama. Sigue siendo el método que invoca <c>StopRecordingAsync</c> directo tras grabar
-    /// (SelectedAudio siempre no-null en ese camino, así que siempre cae en la rama de un audio).
+    /// Punto de entrada de "Transcribir" (botón/comando): despacha a encolar UN audio
+    /// (<see cref="RequestTranscribe"/>) o TODOS los pendientes de un PROYECTO
+    /// (<see cref="EnqueueProject"/>) según qué haya seleccionado — ver <see cref="CanTranscribe"/>
+    /// arriba para las condiciones exactas de cada rama. Sigue siendo el método que invoca
+    /// <c>StopRecordingAsync</c> directo tras grabar (SelectedAudio siempre no-null en ese camino,
+    /// así que siempre cae en la rama de un audio). Ya no espera a que la transcripción TERMINE:
+    /// encola/arranca y vuelve -- el trabajo real corre en <see cref="TranscribeAudioAsync"/>,
+    /// fire-and-forget, con su propio try/catch.
     /// </summary>
+    // Renombrado de TranscribeAsync a Transcribe (refactor de concurrencia, 2026-07-27): el
+    // generador de [RelayCommand] de CommunityToolkit solo pela el sufijo "Async" del nombre del
+    // comando generado (TranscribeCommand) cuando el método DEVUELVE Task -- con este método ahora
+    // sincrónico, "TranscribeAsync" hubiera generado "TranscribeAsyncCommand" y roto todos los
+    // bindings existentes a TranscribeCommand (MainWindow.xaml, StopRecordingAsync). El nombre
+    // sincrónico es además más correcto: ya no espera a que la transcripción termine, solo
+    // encola/arranca y vuelve.
     [RelayCommand(CanExecute = nameof(CanTranscribe))]
-    private async Task TranscribeAsync()
+    private void Transcribe()
     {
         if (SelectedAudio is null && SelectedProject is not null)
         {
-            await TranscribeProjectAsync(SelectedProject);
+            EnqueueProject(SelectedProject);
             return;
         }
 
-        await TranscribeSelectedAudioAsync();
+        if (SelectedAudio is { HasAudio: true } audio)
+            RequestTranscribe(audio);
     }
 
     /// <summary>
-    /// Transcribe todos los audios sin transcribir de <paramref name="project"/>, uno por uno
-    /// (FEATURE 2, 2026-07-17, brief 1.0.52). Pide confirmación antes de arrancar y reusa el MISMO
-    /// camino que la transcripción de un solo audio (<see cref="TranscribeSelectedAudioAsync"/>),
-    /// seteando <see cref="SelectedAudio"/> y esperando cada llamada de a una -- TranscribeAsync
-    /// coordina con SyncCoordinator (zona sensible) y loopear await secuencial es lo seguro, sin
-    /// tocar nada de su lógica interna. Si un audio falla sigue con el resto y avisa al final
-    /// cuántos salieron mal (ver <see cref="BatchTranscribePlanner.SummaryMessage"/>).
-    ///
-    /// Riesgo conocido y aceptado: cada iteración pasa por <see cref="SelectedAudio"/> (la misma
-    /// propiedad que toca un click del usuario en el árbol), así que seleccionar OTRO nodo a mano
-    /// mientras el lote corre puede pisar la selección de la iteración en curso. Es el trade-off
-    /// que el propio brief pide ("reusar el mismo camino... es lo seguro") a cambio de no tocar
-    /// TranscribeSelectedAudioAsync/SyncCoordinator.
+    /// Encola todos los audios sin transcribir de <paramref name="project"/> (FEATURE 2,
+    /// 2026-07-17, generalizado a la cola general en el refactor de concurrencia 2026-07-27). Pide
+    /// confirmación antes de encolar -- mismo mensaje de siempre
+    /// (<see cref="BatchTranscribePlanner.ConfirmMessage"/>). Antes esto loopeaba con await
+    /// secuencial reusando <see cref="SelectedAudio"/> como paso intermedio (wart documentado: click
+    /// en otro nodo del árbol mientras el lote corría pisaba la selección en curso); ahora cada
+    /// audio se encola DIRECTO (<see cref="RequestTranscribe"/>, que ya no toca SelectedAudio) y el
+    /// worker de la cola los procesa de a uno -- el wart queda resuelto de raíz, no evitado.
     /// </summary>
-    private async Task TranscribeProjectAsync(ProjectVm project)
+    private void EnqueueProject(ProjectVm project)
     {
         if (_workspace is null)
             return;
@@ -1886,66 +1969,109 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (!Confirm(BatchTranscribePlanner.ConfirmMessage(project.Title, pending.Count)))
             return;
 
-        _batchCancelRequested = false;
-        _isBatchTranscribing = true;
-        TranscribeCommand.NotifyCanExecuteChanged();
-        OnPropertyChanged(nameof(TranscribeDisabledReason));
+        foreach (var audio in pending)
+            RequestTranscribe(audio);
 
-        int attempted = 0, failures = 0;
-        try
-        {
-            for (var i = 0; i < pending.Count; i++)
-            {
-                var audio = pending[i];
-                if (audio.HasTranscript)
-                    continue; // ya se transcribió por otro medio mientras esperaba su turno.
-
-                attempted++;
-                StatusMessage = BatchTranscribePlanner.ProgressMessage(i + 1, pending.Count);
-                SelectedAudio = audio;
-                await TranscribeSelectedAudioAsync();
-
-                if (!audio.HasTranscript)
-                    failures++;
-
-                if (_batchCancelRequested)
-                    break;
-            }
-        }
-        finally
-        {
-            SelectedAudio = null; // vuelve a la vista de proyecto (ShowProjectFilesView).
-            _isBatchTranscribing = false;
-            TranscribeCommand.NotifyCanExecuteChanged();
-            OnPropertyChanged(nameof(TranscribeDisabledReason));
-        }
-
-        StatusMessage = _batchCancelRequested
-            ? BatchTranscribePlanner.CancelledMessage(attempted, pending.Count, failures)
-            : BatchTranscribePlanner.SummaryMessage(pending.Count, failures);
+        StatusMessage = $"Se encolaron {pending.Count} audio(s) de '{project.Title}'.";
     }
 
-    /// <summary>Transcribe UN audio: <see cref="SelectedAudio"/> (comportamiento de siempre, sin cambios de lógica — ver FEATURE 2 arriba para el camino de lote).</summary>
-    private async Task TranscribeSelectedAudioAsync()
+    /// <summary>
+    /// Cuántos audios esperan su turno en la cola (sin contar el que se está transcribiendo ahora
+    /// mismo -- ese progreso ya se ve en <see cref="StatusMessage"/>/<see cref="TranscribePercent"/>).
+    /// Ver <see cref="TranscriptionQueue{TKey,TItem}"/> (Core).
+    /// </summary>
+    public int QueuedTranscriptionCount => _transcriptionQueue.Count;
+
+    /// <summary>Texto corto para el footer ("3 en cola"), visible solo con algo esperando turno (ver MainWindow.xaml).</summary>
+    public string QueueStatusText => $"{QueuedTranscriptionCount} en cola";
+
+    /// <summary>
+    /// Punto de entrada real de "encolar o arrancar" un audio (refactor de concurrencia,
+    /// 2026-07-27): si <paramref name="audio"/> ya está encolado O es el que está transcribiéndose
+    /// ahora mismo, no hace nada (dedupe -- clickear "Transcribir" dos veces sobre el mismo audio no
+    /// lo duplica). Si no, lo encola y le da una oportunidad al worker de arrancarlo ya mismo si no
+    /// hay nada más usando <c>_cts</c> (ver <see cref="TryStartNextQueuedTranscription"/>).
+    /// </summary>
+    private void RequestTranscribe(AudioItemVm audio)
     {
-        if (_workspace is null || SelectedAudio is null)
+        if (string.Equals(_activeTranscriptionPath, audio.FullPath, StringComparison.OrdinalIgnoreCase))
+            return; // ya se está transcribiendo ESTE audio ahora mismo.
+
+        if (!_transcriptionQueue.Enqueue(audio.FullPath, audio))
+            return; // dedupe: ya estaba encolado.
+
+        OnPropertyChanged(nameof(QueuedTranscriptionCount));
+        OnPropertyChanged(nameof(QueueStatusText));
+        TryStartNextQueuedTranscription();
+    }
+
+    /// <summary>
+    /// Arranca el próximo audio de la cola si hay uno Y no hay nada más usando <c>_cts</c> ahora
+    /// mismo (una transcripción ya corriendo, o una descarga de modelo -- ver
+    /// <see cref="IsBusyOrTranscribing"/>). Se llama cada vez que se libera un "turno": al terminar
+    /// de transcribir (<see cref="TranscribeAudioAsync"/>), y al terminar de descargar (modelo local
+    /// o modelos de diarización) -- así una descarga no deja audios encolados esperando para
+    /// siempre. Fire-and-forget a propósito (mismo patrón que <c>ReleaseServiceAsync</c> más arriba):
+    /// <see cref="TranscribeAudioAsync"/> ya tiene su propio try/catch/finally, no hace falta
+    /// esperarlo acá.
+    /// </summary>
+    private void TryStartNextQueuedTranscription()
+    {
+        if (IsBusyOrTranscribing)
             return;
-        if (!SelectedAudio.HasAudio)
+
+        var next = _transcriptionQueue.Dequeue();
+        if (next is null)
+            return;
+
+        OnPropertyChanged(nameof(QueuedTranscriptionCount));
+        OnPropertyChanged(nameof(QueueStatusText));
+        _ = TranscribeAudioAsync(next);
+    }
+
+    /// <summary>
+    /// Transcribe <paramref name="audio"/> directo (refactor de concurrencia, 2026-07-27: YA NO
+    /// pasa por <see cref="SelectedAudio"/> como paso intermedio -- ese era el wart de la versión
+    /// vieja de esta región, ver <see cref="EnqueueProject"/>). El streaming en vivo hacia
+    /// <see cref="TranscriptText"/> (y su reset/valor final) solo se aplica cuando
+    /// <paramref name="audio"/> además coincide con <see cref="SelectedAudio"/> -- si el usuario
+    /// clickeó OTRO nodo mientras la cola corre, ya no le pisa lo que está mirando. El resto del
+    /// estado "global" del footer (StatusMessage, LogLines, ElapsedText, TranscribePercent) sí se
+    /// actualiza siempre: es el indicador de "qué está haciendo la app ahora", no el contenido de
+    /// un audio puntual.
+    /// </summary>
+    private async Task TranscribeAudioAsync(AudioItemVm audio)
+    {
+        // Los "return" de acá abajo pasan TODOS por TryStartNextQueuedTranscription() antes de
+        // salir (en vez de solo en el finally del try de más abajo, que estos early-return ni
+        // llegan a pisar): son defensivos y en teoría RequestTranscribe/EnqueueProject ya filtran
+        // estos casos ANTES de encolar, pero el motor puede cambiar (Groq -> Local sin el modelo
+        // descargado) MIENTRAS un audio espera turno en la cola -- sin este cuidado, ESE audio
+        // fallaría el guard, cortaría acá, y cualquier cosa detrás de él en la cola se quedaría
+        // esperando un turno que nadie vuelve a ofrecer.
+        if (_workspace is null)
         {
-            // Defensa en profundidad: CanTranscribe ya lo filtra, pero por si se invoca el comando
-            // programáticamente sin pasar por el CanExecute.
+            TryStartNextQueuedTranscription();
+            return;
+        }
+        if (!audio.HasAudio)
+        {
+            // Defensa en profundidad: CanTranscribe/RequestTranscribe ya lo filtran, pero por si se
+            // invoca sin pasar por ahí.
             StatusMessage = "Esta transcripción no tiene audio (se creó como solo texto).";
+            TryStartNextQueuedTranscription();
             return;
         }
         if (!IsGroq && !IsLocalModelAvailable)
         {
             // Defensa REAL (no solo en profundidad): a diferencia de los otros dos checks de acá
-            // arriba, este SÍ hace falta -- StopRecordingAsync llama a TranscribeAsync() directo
+            // arriba, este SÍ hace falta -- StopRecordingAsync llama a Transcribe() directo
             // (no a través de TranscribeCommand), así que CanTranscribe NO se evalúa en ese
             // camino. Sin este guard, grabar con el motor Local sin el modelo descargado y aceptar
             // "¿Transcribirla ahora?" volvería a disparar la descarga escondida adentro de la
             // transcripción -- exactamente el bug reportado.
             StatusMessage = "El modelo local todavía no está descargado. Descargalo con el botón \"Descargar modelo\" antes de transcribir.";
+            TryStartNextQueuedTranscription();
             return;
         }
 
@@ -1953,21 +2079,27 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // subirlo entero para cosechar un 413 (un usuario real trajo un video de 1,6 GB — 65x el
         // tope — que habría significado una subida larguísima para un error garantizado).
         // Nunca en silencio: el motor lo eligió la usuaria a propósito.
-        var sizeDecision = EngineSelector.Decide(SelectedAudio.SizeBytes, IsGroq, IsLocalModelAvailable);
+        var sizeDecision = EngineSelector.Decide(audio.SizeBytes, IsGroq, IsLocalModelAvailable);
         if (sizeDecision == EngineDecision.NeedsLocalModel)
         {
-            StatusMessage = EngineSelector.Notice(sizeDecision, SelectedAudio.SizeBytes)!;
+            StatusMessage = EngineSelector.Notice(sizeDecision, audio.SizeBytes)!;
+            TryStartNextQueuedTranscription();
             return;
         }
         if (sizeDecision == EngineDecision.SwitchToLocal)
         {
             Engine = "local";
-            StatusMessage = EngineSelector.Notice(sizeDecision, SelectedAudio.SizeBytes)!;
+            StatusMessage = EngineSelector.Notice(sizeDecision, audio.SizeBytes)!;
         }
 
-        var audio = SelectedAudio;
-        IsBusy = true;
-        TranscriptText = string.Empty;
+        // ¿Este audio es además el seleccionado ahora mismo? Solo en ese caso tocamos TranscriptText
+        // (streaming en vivo) -- ver el comentario largo del método.
+        bool IsCurrentlySelected() => SelectedAudio is { } sel && string.Equals(sel.FullPath, audio.FullPath, StringComparison.OrdinalIgnoreCase);
+
+        _activeTranscriptionPath = audio.FullPath;
+        IsTranscribing = true;
+        if (IsCurrentlySelected())
+            TranscriptText = string.Empty;
         TranscribePercent = 0;
         LogLines.Clear();
         _cts = new CancellationTokenSource();
@@ -1996,7 +2128,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             if (sb.Length == 0)
                 IsDownloading = false;
             sb.Append(seg.Text);
-            TranscriptText = sb.ToString();
+            if (IsCurrentlySelected())
+                TranscriptText = sb.ToString();
             segments.Add(seg);
         });
 
@@ -2037,7 +2170,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 text = await cloud.TranscribeAsync(
                     audio.FullPath, accessToken, GroqModel, log, _cts.Token,
                     translate: IsTranslateMode, targetLanguage: TranslationTargetLanguage);
-                TranscriptText = text;
+                if (IsCurrentlySelected())
+                    TranscriptText = text;
             }
             else
             {
@@ -2078,7 +2212,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             var outPath = audio.TranscriptPath;
             _workspace.SaveTranscript(outPath, text);
 
-            TranscriptText = text;
+            if (IsCurrentlySelected())
+                TranscriptText = text;
             audio.HasTranscript = true;
             StatusMessage = $"Listo. Transcript guardado en {outPath}";
 
@@ -2091,7 +2226,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Transcripción cancelada.";
+            StatusMessage = _queueWasClearedByCancel
+                ? "Transcripción cancelada, cola vaciada."
+                : "Transcripción cancelada.";
+            _queueWasClearedByCancel = false;
         }
         catch (Exception ex)
         {
@@ -2107,10 +2245,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _elapsedTimer.Stop();
             _elapsedSw.Stop();
             ElapsedText = _elapsedSw.Elapsed.ToString(@"mm\:ss");
-            IsBusy = false;
+            IsTranscribing = false;
             IsDownloading = false;
             DownloadPercent = 0;
             TranscribePercent = 0;
+            _activeTranscriptionPath = null;
             _cts?.Dispose();
             _cts = null;
 
@@ -2119,6 +2258,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // antes de llegar ahí), ACÁ es el único lugar que garantiza limpiarlo siempre. No tira
             // si no hay nada que borrar.
             _service?.DeleteLastConvertedWav();
+
+            // Turno libre: si quedó algo esperando en la cola, arranca ahora (ver
+            // TryStartNextQueuedTranscription). Al final del finally: recién acá _cts/IsTranscribing
+            // quedaron limpios.
+            TryStartNextQueuedTranscription();
         }
     }
 
@@ -2167,19 +2311,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool CanCancel() => IsBusy;
+    private bool CanCancel() => IsBusyOrTranscribing;
 
     /// <summary>
-    /// Cancela lo que esté corriendo. <see cref="_batchCancelRequested"/> (FEATURE 2, 2026-07-17)
-    /// solo importa mientras hay un lote de proyecto corriendo (ver TranscribeProjectAsync) — en
-    /// una transcripción de un solo audio queda prendido sin que nadie lo lea, y el próximo lote
-    /// lo reinicia a false apenas arranca.
+    /// Cancela lo que esté corriendo (una transcripción o una descarga, comparten <c>_cts</c>) Y
+    /// vacía la cola pendiente (refactor de concurrencia, 2026-07-27: "Cancelar" es un frenazo total,
+    /// no solo del audio actual -- la usuaria pidió parar, no seguir con el próximo de la cola sin
+    /// avisar). El audio que ya estaba corriendo cuando se canceló NO se re-encola.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanCancel))]
     private void Cancel()
     {
-        _batchCancelRequested = true;
+        _queueWasClearedByCancel = _transcriptionQueue.Count > 0;
+        _transcriptionQueue.Clear();
+        OnPropertyChanged(nameof(QueuedTranscriptionCount));
+        OnPropertyChanged(nameof(QueueStatusText));
         _cts?.Cancel();
+        // El StatusMessage final lo terminan de escribir los catch de OperationCanceledException de
+        // TranscribeAudioAsync/DownloadModelAsync/DownloadDiarizationModelsAsync (leen
+        // _queueWasClearedByCancel) -- _cts.Cancel() es asincrónico, así que poner el mensaje ACÁ
+        // se lo pisaría el catch que corresponda apenas la cancelación se propague.
     }
 
     // ---- Grabar audio desde el micrófono ---------------------------------
@@ -2220,7 +2371,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>True para mostrar "Detener grabación" cuando lo que está en curso es la grabación de reunión.</summary>
     public bool ShowStopMeetingButton => IsRecording && IsMeetingRecording;
 
-    private bool CanToggleRecording() => !IsBusy;
+    // Refactor de concurrencia (2026-07-27): ya NO depende de "ocupado transcribiendo" -- grabar y
+    // transcribir corren en paralelo ahora. Se mantiene el bloqueo por !IsDownloading (chocaría con
+    // una descarga de modelo en curso, mismo criterio de siempre). OJO: NO se agrega "!IsRecording"
+    // acá aunque el brief lo sugiera -- este mismo comando también dispara "Detener grabación" (ver
+    // MainWindow.xaml, los dos botones "Detener grabación" están bindeados a ToggleRecordingCommand/
+    // ToggleMeetingRecordingCommand) y agregar !IsRecording deshabilitaría el botón de DETENER
+    // mientras se está grabando. "una grabación a la vez" ya está garantizado por la UI (los
+    // botones de arrancar quedan Collapsed mientras IsRecording, ver Visibility en XAML), no hace
+    // falta duplicarlo acá.
+    private bool CanToggleRecording() => !IsDownloading;
 
     /// <summary>Arranca o detiene la grabación normal (solo micrófono), según el estado actual.</summary>
     [RelayCommand(CanExecute = nameof(CanToggleRecording))]
@@ -2300,7 +2460,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private MeetingAudioSourceOption _selectedMeetingAudioSource = AllSystemAudioOption;
 
-    private bool CanToggleMeetingRecording() => !IsBusy;
+    // Ver el comentario largo de CanToggleRecording (mismo criterio, misma razón para no sumar
+    // !IsRecording acá).
+    private bool CanToggleMeetingRecording() => !IsDownloading;
 
     /// <summary>Arranca o detiene la grabación de la reunión, según el estado actual.</summary>
     [RelayCommand(CanExecute = nameof(CanToggleMeetingRecording))]
@@ -2519,8 +2681,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         SelectedAudio = newAudioVm;
         newAudioVm.IsSelected = true;
 
+        // Transcribe() (antes TranscribeAsync -- ver el comentario largo en su declaración) es
+        // sincrónico: encola/arranca y vuelve al toque, el trabajo real corre en
+        // TranscribeAudioAsync, fire-and-forget con su propio try/catch. Ya no hace falta await acá.
         if (Confirm($"Grabación lista ('{newAudioVm.FileName}'). ¿Transcribirla ahora?"))
-            await TranscribeAsync();
+            Transcribe();
     }
 
     /// <summary>Busca el <see cref="AudioItemVm"/> cuyo archivo de audio está en <paramref name="fullPath"/>.</summary>
@@ -2973,6 +3138,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         _watcher?.Dispose();
         _watcher = null;
+
+        _transcriptionQueue.Clear();
 
         _cts?.Cancel();
         _cts?.Dispose();
