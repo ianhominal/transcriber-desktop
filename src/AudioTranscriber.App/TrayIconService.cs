@@ -310,6 +310,23 @@ public sealed class TrayIconService : IDisposable
         PersistAutoStartMirror(enabled);
     }
 
+    /// <summary>
+    /// Notificación de "detecté una reunión" (ver <see cref="MeetingDetectionService"/>, que llama
+    /// esto desde afuera -- no es un evento interno como <see cref="OnUpdateReady"/>, así que necesita
+    /// ser público). Mismo criterio defensivo de marshaling que el resto de la clase: quien la llama
+    /// corre en un <see cref="System.Windows.Threading.DispatcherTimer"/> propio, que en la práctica
+    /// ya cae en el hilo de UI, pero esto no depende de eso.
+    /// </summary>
+    public void NotifyMeetingDetected(string title, string message, Action? onClick)
+    {
+        if (!_mainWindow.Dispatcher.CheckAccess())
+        {
+            _mainWindow.Dispatcher.BeginInvoke(() => NotifyMeetingDetected(title, message, onClick));
+            return;
+        }
+        _notifier.ShowBalloon(title, message, onClick);
+    }
+
     private void OpenSettings()
     {
         OpenApp();
@@ -395,7 +412,14 @@ public sealed class TrayIconService : IDisposable
 /// </summary>
 public interface ITrayNotifier
 {
-    void ShowBalloon(string title, string message);
+    /// <param name="onClick">
+    /// Opcional: se invoca si el usuario CLICKEA el globo (ver <see cref="MeetingDetectionService"/>,
+    /// que lo usa para el prompt "¿Grabar reunión?" -- WinForms no soporta botones reales dentro del
+    /// globo, así que "clickear el globo" hace de acción primaria; no clickearlo/dejar que expire
+    /// equivale a "Ignorar"). <c>null</c> (default) para un globo puramente informativo, como el de
+    /// "Actualización disponible".
+    /// </param>
+    void ShowBalloon(string title, string message, Action? onClick = null);
 }
 
 /// <summary>
@@ -409,6 +433,26 @@ internal sealed class NotifyIconTrayNotifier : ITrayNotifier
 
     public NotifyIconTrayNotifier(WinForms.NotifyIcon notifyIcon) => _notifyIcon = notifyIcon;
 
-    public void ShowBalloon(string title, string message) =>
+    public void ShowBalloon(string title, string message, Action? onClick = null)
+    {
+        if (onClick is not null)
+        {
+            // Suscripción de un solo uso: se desengancha sola apenas se dispara CUALQUIERA de los
+            // dos eventos (clickeado o cerrado/expirado) -- si no, un handler de un globo viejo
+            // podría quedar colgado y dispararse con el PRÓXIMO globo que se muestre (mismo
+            // NotifyIcon, compartido por toda la app).
+            void OnClicked(object? s, EventArgs e) { Unsubscribe(); onClick(); }
+            void OnClosed(object? s, EventArgs e) => Unsubscribe();
+            void Unsubscribe()
+            {
+                _notifyIcon.BalloonTipClicked -= OnClicked;
+                _notifyIcon.BalloonTipClosed -= OnClosed;
+            }
+
+            _notifyIcon.BalloonTipClicked += OnClicked;
+            _notifyIcon.BalloonTipClosed += OnClosed;
+        }
+
         _notifyIcon.ShowBalloonTip(5000, title, message, WinForms.ToolTipIcon.Info);
+    }
 }

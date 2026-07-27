@@ -50,6 +50,17 @@ public sealed class AppSettings
     public bool UseDiarization { get; set; }
 
     /// <summary>
+    /// Detección automática de reuniones (Meet/Zoom/Teams/Discord voz, vía uso del micrófono -- ver
+    /// <see cref="AudioTranscriber.Core.Meetings.MeetingDetector"/> y
+    /// <see cref="AudioTranscriber.App.MeetingDetectionService"/>): "Preguntar" (default, notifica y
+    /// pregunta antes de grabar) | "Automatico" (graba sola, solo avisa) | "Desactivado" (no
+    /// detecta nada). Cualquier valor desconocido/corrupto se trata como "Preguntar" en
+    /// <see cref="MeetingDetectionService"/> (mismo criterio permisivo que <see cref="Theme"/>/
+    /// <see cref="AudioTranscriber.Core.Runtime.ThemeResolver.Parse"/>).
+    /// </summary>
+    public string MeetingDetection { get; set; } = "Preguntar";
+
+    /// <summary>
     /// La ÚNICA carpeta de la app: es el workspace (lo que ve MainWindow) Y la carpeta que se
     /// sincroniza con la nube, al estilo Dropbox. Reemplaza a los viejos <see cref="WorkspacePath"/>
     /// y <see cref="SyncFolderPath"/> (ver migración en <see cref="Load"/>). Vacío = todavía no

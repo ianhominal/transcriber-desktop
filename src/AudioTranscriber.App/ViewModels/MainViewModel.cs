@@ -2571,7 +2571,17 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// EXACTAMENTE el mismo para las dos, así que solo esta primera parte (cuál grabador frenar)
     /// se bifurca según <see cref="IsMeetingRecording"/>.
     /// </summary>
-    private async Task StopRecordingAsync()
+    /// <param name="auto">
+    /// True cuando quien frena es <see cref="MeetingDetectionService"/> (App) al detectar que la
+    /// reunión terminó, NO un click del usuario en "Detener grabación" -- ver
+    /// <see cref="AutoStopMeetingRecordingAsync"/>. Con esto en true se salta TODO diálogo modal
+    /// (el selector de proyecto/título de <see cref="RecordingSaveDialog"/> y el "¿Transcribirla
+    /// ahora?" de <see cref="Confirm"/>): el audio queda con su nombre/carpeta automáticos y se
+    /// encola para transcribir directo, sin esperar ninguna interacción -- el brief pide "pará la
+    /// grabación sola y encolá la transcripción", no que aparezca un diálogo que puede quedar sin
+    /// atender si el usuario ya se fue de la reunión.
+    /// </param>
+    private async Task StopRecordingAsync(bool auto = false)
     {
         string? path;
         if (IsMeetingRecording)
@@ -2630,49 +2640,55 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // El audio ya quedó guardado con nombre automático en la carpeta del proyecto que estaba
         // enfocado al ARRANCAR a grabar; acá se ofrece confirmarlo o moverlo/renombrarlo antes de
         // seguir, reusando Workspace.MoveAudio/RenameAudio (mismos métodos que ya usa el árbol).
-        var owningProject = Projects.FirstOrDefault(p => p.Audios.Contains(newAudioVm));
-        var currentProjectName = owningProject is { IsGeneral: false } ? owningProject.Name : null;
-        var projectNames = Projects.Where(p => !p.IsGeneral).Select(p => p.Name).ToList();
-        var defaultTitle = RecordingSaveDefaults.DefaultTitle(newAudioVm.FileName);
-        var defaultProject = RecordingSaveDefaults.ResolveDefaultProject(projectNames, currentProjectName);
-
-        var choice = RecordingSaveDialog.Show(projectNames, defaultProject, defaultTitle);
-        if (choice is { } picked)
+        // Se salta ENTERO con auto=true (ver el XML doc del parámetro): sin usuario atendiendo la
+        // reunión, no hay quién conteste este diálogo modal -- el audio queda con su
+        // nombre/carpeta automáticos, que ya es un resultado perfectamente usable.
+        if (!auto)
         {
-            try
+            var owningProject = Projects.FirstOrDefault(p => p.Audios.Contains(newAudioVm));
+            var currentProjectName = owningProject is { IsGeneral: false } ? owningProject.Name : null;
+            var projectNames = Projects.Where(p => !p.IsGeneral).Select(p => p.Name).ToList();
+            var defaultTitle = RecordingSaveDefaults.DefaultTitle(newAudioVm.FileName);
+            var defaultProject = RecordingSaveDefaults.ResolveDefaultProject(projectNames, currentProjectName);
+
+            var choice = RecordingSaveDialog.Show(projectNames, defaultProject, defaultTitle);
+            if (choice is { } picked)
             {
-                // Mover y renombrar son dos pasos de I/O separados sobre AudioItem (record
-                // INMUTABLE, ver AudioItem.cs): tras MoveAudio, newAudioVm.Model todavía apunta a
-                // la ruta VIEJA (el archivo ya no está ahí). Por eso se refresca y se vuelve a
-                // localizar el audio DESPUÉS de mover y ANTES de intentar renombrar — si se
-                // encadenaran sin refrescar, RenameAudio fallaría con "no se encuentra el archivo".
-                if (RecordingSaveDefaults.NeedsMove(currentProjectName, picked.ProjectName))
+                try
                 {
-                    var targetProject = picked.ProjectName is null
-                        ? Projects.First(p => p.IsGeneral)
-                        : Projects.First(p => !p.IsGeneral && p.Name == picked.ProjectName);
-                    _workspace.MoveAudio(newAudioVm.Model, targetProject.Model);
+                    // Mover y renombrar son dos pasos de I/O separados sobre AudioItem (record
+                    // INMUTABLE, ver AudioItem.cs): tras MoveAudio, newAudioVm.Model todavía apunta a
+                    // la ruta VIEJA (el archivo ya no está ahí). Por eso se refresca y se vuelve a
+                    // localizar el audio DESPUÉS de mover y ANTES de intentar renombrar — si se
+                    // encadenaran sin refrescar, RenameAudio fallaría con "no se encuentra el archivo".
+                    if (RecordingSaveDefaults.NeedsMove(currentProjectName, picked.ProjectName))
+                    {
+                        var targetProject = picked.ProjectName is null
+                            ? Projects.First(p => p.IsGeneral)
+                            : Projects.First(p => !p.IsGeneral && p.Name == picked.ProjectName);
+                        _workspace.MoveAudio(newAudioVm.Model, targetProject.Model);
 
-                    RefreshAudios();
-                    var movedPath = Path.Combine(targetProject.Model.FolderPath, newAudioVm.FileName);
-                    newAudioVm = FindAudioByFullPath(movedPath) ?? newAudioVm;
+                        RefreshAudios();
+                        var movedPath = Path.Combine(targetProject.Model.FolderPath, newAudioVm.FileName);
+                        newAudioVm = FindAudioByFullPath(movedPath) ?? newAudioVm;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(picked.Title) &&
+                        RecordingSaveDefaults.NeedsRename(RecordingSaveDefaults.DefaultTitle(newAudioVm.FileName), picked.Title))
+                    {
+                        var folder = Path.GetDirectoryName(newAudioVm.FullPath)!;
+                        var ext = Path.GetExtension(newAudioVm.FileName);
+                        _workspace.RenameAudio(newAudioVm.Model, picked.Title);
+
+                        RefreshAudios();
+                        var renamedPath = Path.Combine(folder, Workspace.Sanitize(picked.Title) + ext);
+                        newAudioVm = FindAudioByFullPath(renamedPath) ?? newAudioVm;
+                    }
                 }
-
-                if (!string.IsNullOrWhiteSpace(picked.Title) &&
-                    RecordingSaveDefaults.NeedsRename(RecordingSaveDefaults.DefaultTitle(newAudioVm.FileName), picked.Title))
+                catch (Exception ex)
                 {
-                    var folder = Path.GetDirectoryName(newAudioVm.FullPath)!;
-                    var ext = Path.GetExtension(newAudioVm.FileName);
-                    _workspace.RenameAudio(newAudioVm.Model, picked.Title);
-
-                    RefreshAudios();
-                    var renamedPath = Path.Combine(folder, Workspace.Sanitize(picked.Title) + ext);
-                    newAudioVm = FindAudioByFullPath(renamedPath) ?? newAudioVm;
+                    StatusMessage = $"No se pudo guardar con el proyecto/título elegidos: {ex.Message}";
                 }
-            }
-            catch (Exception ex)
-            {
-                StatusMessage = $"No se pudo guardar con el proyecto/título elegidos: {ex.Message}";
             }
         }
 
@@ -2684,8 +2700,35 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // Transcribe() (antes TranscribeAsync -- ver el comentario largo en su declaración) es
         // sincrónico: encola/arranca y vuelve al toque, el trabajo real corre en
         // TranscribeAudioAsync, fire-and-forget con su propio try/catch. Ya no hace falta await acá.
-        if (Confirm($"Grabación lista ('{newAudioVm.FileName}'). ¿Transcribirla ahora?"))
+        if (auto)
+        {
+            // Detección automática de fin de reunión (ver el XML doc del parámetro auto): nada de
+            // preguntar, se encola directo.
+            StatusMessage = $"Reunión terminada. Grabación guardada ('{newAudioVm.FileName}') y encolada para transcribir.";
             Transcribe();
+        }
+        else if (Confirm($"Grabación lista ('{newAudioVm.FileName}'). ¿Transcribirla ahora?"))
+        {
+            Transcribe();
+        }
+    }
+
+    /// <summary>
+    /// Punto de entrada público para <see cref="MeetingDetectionService"/> (App): frena SOLA la
+    /// grabación de reunión cuando la detección confirma que la reunión terminó -- ver el brief
+    /// "Al detectar 'terminó la reunión': ... pará la grabación sola y encolá la transcripción". No
+    /// hace nada si no hay una grabación de reunión en curso -- en particular, si el usuario ya la
+    /// frenó a mano antes de que este método llegue a correr (carrera entre el poll de detección y
+    /// un click manual), o si lo que está en curso es una grabación NORMAL (solo mic, no de
+    /// reunión) que el usuario arrancó por su cuenta: esa nunca la toca la detección, sea cual sea
+    /// el motivo por el que <see cref="IsRecording"/> esté en true.
+    /// </summary>
+    public async Task AutoStopMeetingRecordingAsync()
+    {
+        if (!IsRecording || !IsMeetingRecording)
+            return;
+
+        await StopRecordingAsync(auto: true);
     }
 
     /// <summary>Busca el <see cref="AudioItemVm"/> cuyo archivo de audio está en <paramref name="fullPath"/>.</summary>

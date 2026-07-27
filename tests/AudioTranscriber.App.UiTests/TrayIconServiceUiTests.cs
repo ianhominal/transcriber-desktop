@@ -48,7 +48,7 @@ public class TrayIconServiceUiTests
     {
         public List<(string Title, string Message)> Balloons { get; } = new();
 
-        public void ShowBalloon(string title, string message) => Balloons.Add((title, message));
+        public void ShowBalloon(string title, string message, Action? onClick = null) => Balloons.Add((title, message));
     }
 
     [Fact]

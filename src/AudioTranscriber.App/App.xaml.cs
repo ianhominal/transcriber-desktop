@@ -237,6 +237,11 @@ public partial class App : Application
         // relanzamiento manual. Se detiene en OnExit.
         UpdateService.Instance.StartPeriodicChecks();
 
+        // Detección automática de reunión (Meet/Zoom/Teams/Discord voz, ver MeetingDetectionService
+        // + Core/Meetings/MeetingDetector): arranca el poll del registro. Se detiene en OnExit,
+        // mismo ciclo de vida que el chequeo periódico de arriba.
+        MeetingDetectionService.Instance.Start();
+
         StartupLogger.Log("OnStartup end.");
     }
 
@@ -305,6 +310,7 @@ public partial class App : Application
     private void OnExit(object? sender, ExitEventArgs e)
     {
         UpdateService.Instance.StopPeriodicChecks();
+        MeetingDetectionService.Instance.Stop();
         _trayIconService?.Dispose();
     }
 

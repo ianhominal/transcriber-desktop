@@ -50,6 +50,11 @@ public partial class SettingsWindow : Window
         UseDiarizationToggle.IsChecked = AppSettings.Instance.UseDiarization;
         UpdateEngineRowEnabled();
 
+        // "Detección de reuniones": valor inicial ANTES de suscribir SelectionChanged, mismo
+        // criterio que el resto de esta ventana (evita un guardado redundante al abrir).
+        MeetingDetectionCombo.SelectedValue = AppSettings.Instance.MeetingDetection;
+        MeetingDetectionCombo.SelectionChanged += OnMeetingDetectionSelectionChanged;
+
         MinimizeToTrayToggle.Checked += OnMinimizeToTrayToggleChanged;
         MinimizeToTrayToggle.Unchecked += OnMinimizeToTrayToggleChanged;
         AutoStartToggle.Checked += OnAutoStartToggleChanged;
@@ -302,6 +307,19 @@ public partial class SettingsWindow : Window
 
         if (useDiarization)
             EngineCombo.SelectedValue = "local";
+    }
+
+    /// <summary>
+    /// "Detección de reuniones" (ver MeetingDetectionService, App/Core/Meetings/MeetingDetector):
+    /// a diferencia de Motor/Calidad/Idioma/Modo/Diarización de arriba, esto NO tiene un espejo en
+    /// MainViewModel -- MeetingDetectionService lee <see cref="AppSettings.MeetingDetection"/>
+    /// directo de la instancia compartida en cada poll, así que alcanza con persistir acá.
+    /// </summary>
+    private void OnMeetingDetectionSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        AppSettings.Instance.MeetingDetection =
+            MeetingDetectionCombo.SelectedValue as string ?? AppSettings.Instance.MeetingDetection;
+        AppSettings.Instance.Save();
     }
 
     /// <summary>

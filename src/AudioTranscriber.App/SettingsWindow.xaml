@@ -318,6 +318,42 @@
             </StackPanel>
         </Border>
 
+        <!-- ===== Detección de reuniones ===== -->
+        <!-- Detecta que hay una llamada en curso (Meet, Zoom, Teams, Discord voz) chequeando qué
+             apps están usando el micrófono (registro ConsentStore de Windows, ver
+             MicrophoneUsageReader/MeetingDetectionService + Core/Meetings/MeetingDetector, que tiene
+             la lógica pura y sus tests). "Preguntar" (default) notifica y espera un click antes de
+             grabar; "Automático" arranca la grabación sola (solo avisa); "Desactivado" no detecta
+             nada. -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Detección de reuniones" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0">
+                        <TextBlock Text="Al detectar Meet, Zoom, Teams o Discord (voz)" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock Text="Se detecta cuando alguna de esas apps usa tu micrófono. 'Preguntar' te avisa antes de grabar; 'Automático' graba sola."
+                                   FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <ComboBox x:Name="MeetingDetectionCombo" Grid.Column="1" Width="150" VerticalAlignment="Center"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="Preguntar" Tag="Preguntar"/>
+                        <ComboBoxItem Content="Automático" Tag="Automatico"/>
+                        <ComboBoxItem Content="Desactivado" Tag="Desactivado"/>
+                    </ComboBox>
+                </Grid>
+
+                <!-- Aviso de consentimiento pedido explícitamente en el brief: grabar a otras
+                     personas puede requerir avisarles según la jurisdicción. -->
+                <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource TextMuted}"
+                           Text="Grabar una reunión puede requerir avisar a los participantes según tu jurisdicción."/>
+            </StackPanel>
+        </Border>
+
         <!-- ===== Actualizaciones ===== -->
         <!-- Jerarquía: cuando hay update lista, "Reiniciar y actualizar" es el botón PRIMARIO
              destacado y "Buscar actualizaciones" queda como secundario discreto al lado (nunca dos
