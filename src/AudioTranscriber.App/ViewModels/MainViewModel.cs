@@ -656,6 +656,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(EditProjectMetaCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenProjectAssistantCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenAssistantCommand))]
+    // Bug de producción (2026-07-28): faltaba esta línea y el botón "Compartir" quedaba deshabilitado
+    // para siempre. CanOpenShareWindow() era correcto -- pero se evaluaba UNA sola vez, al arranque,
+    // cuando todavía no hay proyecto elegido, y nada volvía a preguntarlo. Exactamente el mismo caso
+    // que ya documenta el comentario de TranscribeCommand más abajo: si un CanExecute depende de
+    // SelectedProject, TIENE que estar en esta lista o el botón miente.
+    [NotifyCanExecuteChangedFor(nameof(OpenShareWindowCommand))]
     [NotifyCanExecuteChangedFor(nameof(RenameSelectedCommand))]
     [NotifyCanExecuteChangedFor(nameof(DeleteSelectedCommand))]
     // FEATURE 2 (2026-07-17): CanTranscribe() ahora también depende de SelectedProject (batch-
