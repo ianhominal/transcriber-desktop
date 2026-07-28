@@ -53,7 +53,15 @@ public sealed record SyncBaselineItem(
     string LastLocalHash,
     string LastRemoteHash,
     DateTimeOffset UpdatedAt,
-    bool Deleted = false);
+    bool Deleted = false,
+    /// <summary>
+    /// Último <c>version</c> remoto CONOCIDO de este ítem (ADR-07: hash detecta "cambió / no
+    /// cambió", version es el único árbitro de conflictos). Se refresca desde CADA fila del pull,
+    /// incondicionalmente -- nunca filtrado por si el planner generó una acción (ADR-07e) --, así
+    /// que un push posterior manda el <c>base_version</c> correcto y el servidor puede distinguir
+    /// "estoy al día" de "estoy desactualizado" sin usar el reloj del cliente (I-5).
+    /// </summary>
+    int LastRemoteVersion = 0);
 
 /// <summary>Operación concreta a ejecutar tras reconciliar.</summary>
 public sealed record SyncAction(

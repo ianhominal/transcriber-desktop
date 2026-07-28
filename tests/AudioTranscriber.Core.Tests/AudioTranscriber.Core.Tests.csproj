@@ -26,4 +26,12 @@
     <ProjectReference Include="..\..\src\AudioTranscriber.Core\AudioTranscriber.Core.csproj" />
   </ItemGroup>
 
+  <!-- Fixtures del contrato compartido con el repo web (ADR-13). Se copian al directorio de salida
+       para que los tests los lean desde AppContext.BaseDirectory: el fixture TIENE que vivir dentro
+       de este repo, si no un clon limpio no lo encuentra y el test falla en cualquier máquina que no
+       sea la del dueño. Ver el comentario de PushResponseFixture en SyncDtosTests. -->
+  <ItemGroup>
+    <Content Include="Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -120,6 +120,12 @@ public sealed class RemoteProject
     /// backward-compatible con un servidor viejo.
     /// </summary>
     [JsonPropertyName("sync_origin")] public string? SyncOrigin { get; set; }
+
+    /// <summary>
+    /// version monotónico (ADR-07): incrementado por el mismo trigger que updated_at en cada
+    /// UPDATE. Único árbitro de conflictos -- el reloj del cliente nunca decide un ganador (I-5).
+    /// </summary>
+    [JsonPropertyName("version")] public int Version { get; set; }
 }
 
 public sealed class RemoteTranscription
@@ -132,6 +138,9 @@ public sealed class RemoteTranscription
     [JsonPropertyName("text")] public string Text { get; set; } = "";
     [JsonPropertyName("updated_at")] public DateTimeOffset UpdatedAt { get; set; }
     [JsonPropertyName("deleted_at")] public DateTimeOffset? DeletedAt { get; set; }
+
+    /// <summary>Ver <see cref="RemoteProject.Version"/> -- mismo contrato, misma semántica (ADR-07).</summary>
+    [JsonPropertyName("version")] public int Version { get; set; }
 }
 
 public sealed class PullResponse
@@ -166,6 +175,39 @@ public sealed class PushResponse
     [JsonPropertyName("serverTime")] public DateTimeOffset? ServerTime { get; set; }
     [JsonPropertyName("ok")] public bool Ok { get; set; }
     [JsonPropertyName("errors")] public List<string> Errors { get; set; } = new();
+
+    /// <summary>
+    /// Resultado estructurado por ítem (ADR-07c, Task 5.4): reemplaza el matcheo por string de
+    /// <see cref="Errors"/> como canal de decisión. <see cref="Errors"/> se mantiene solo por
+    /// compatibilidad de mensajes de UI. Vacío en un servidor viejo que todavía no lo manda
+    /// (backward-compatible, ver <see cref="PushResultItem"/>).
+    /// </summary>
+    [JsonPropertyName("results")] public List<PushResultItem> Results { get; set; } = new();
+}
+
+/// <summary>
+/// Un ítem de <see cref="PushResponse.Results"/> (ADR-07c). Forma exacta que ya devuelve el
+/// backend (<c>web/src/app/api/sync/push/route.ts</c>, tipo <c>PushResult</c>):
+/// <c>{status:"ok", version}</c> / <c>{status:"conflict", version}</c> /
+/// <c>{status:"error", code}</c>. <see cref="Version"/> y <see cref="Code"/> son mutuamente
+/// exclusivos según <see cref="Status"/> -- por eso ambos son nullable en vez de modelar tres
+/// clases separadas (el contrato JSON real es un solo shape con campos opcionales).
+/// </summary>
+public sealed class PushResultItem
+{
+    [JsonPropertyName("id")] public string Id { get; set; } = "";
+
+    /// <summary><c>"project"</c> o <c>"transcription"</c>.</summary>
+    [JsonPropertyName("kind")] public string Kind { get; set; } = "";
+
+    /// <summary><c>"ok"</c>, <c>"conflict"</c> o <c>"error"</c>.</summary>
+    [JsonPropertyName("status")] public string Status { get; set; } = "";
+
+    /// <summary>version resultante ("ok") o la del servidor que ganó ("conflict"). Ausente en "error".</summary>
+    [JsonPropertyName("version")] public int? Version { get; set; }
+
+    /// <summary>Código de error (p.ej. "client_too_old"). Solo presente cuando Status == "error".</summary>
+    [JsonPropertyName("code")] public string? Code { get; set; }
 }
 
 public sealed class ProjectUpsert
@@ -197,6 +239,17 @@ public sealed class ProjectUpsert
     [JsonPropertyName("parent_project_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParentProjectId { get; set; }
+
+    /// <summary>
+    /// version que el cliente cree que tiene la fila (ADR-07c/g): "undefined" (campo ausente) es un
+    /// ítem NUEVO sin base contra la cual comparar -- el servidor lo trata como alta. Un valor
+    /// explícito le permite al servidor rechazar el upsert como "conflict" si la fila real avanzó
+    /// desde entonces. Igual criterio que <see cref="ParentProjectId"/>/<see cref="Icon"/>: NUNCA
+    /// se manda un 0 falso para un ítem nuevo.
+    /// </summary>
+    [JsonPropertyName("base_version")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? BaseVersion { get; set; }
 }
 
 public sealed class TranscriptionUpsert
@@ -211,4 +264,9 @@ public sealed class TranscriptionUpsert
     // solo podía ACTUALIZAR una fila que no existía, y se perdía en silencio. Ver el endpoint
     // /api/sync/push (repo web): con audio_name presente hace un upsert real (crea-o-actualiza).
     [JsonPropertyName("audio_name")] public string? AudioName { get; set; }
+
+    /// <summary>Ver <see cref="ProjectUpsert.BaseVersion"/> -- mismo contrato, misma semántica (ADR-07c/g).</summary>
+    [JsonPropertyName("base_version")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? BaseVersion { get; set; }
 }

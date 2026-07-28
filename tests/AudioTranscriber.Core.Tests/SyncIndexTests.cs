@@ -48,6 +48,34 @@ public class SyncIndexTests : IDisposable
     }
 
     [Fact]
+    public void SaveBaseline_LuegoLoad_PreservaLastRemoteVersion()
+    {
+        // Task 2.1 (ADR-07e): version es el único árbitro de conflictos; la baseline necesita
+        // anclar el último version REMOTO conocido por ítem, igual que ya ancla LastRemoteHash.
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            ["t1"] = new SyncBaselineItem("t1", SyncItemKind.Transcription, "local-hash", "remote-hash", DateTimeOffset.FromUnixTimeSeconds(1000), LastRemoteVersion: 7),
+        });
+
+        var loaded = index.LoadBaseline();
+
+        Assert.Equal(7, loaded["t1"].LastRemoteVersion);
+    }
+
+    [Fact]
+    public void SaveBaseline_SinLastRemoteVersionExplicito_DefaultCero()
+    {
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            ["p1"] = new SyncBaselineItem("p1", SyncItemKind.Project, "hashA", "hashA-remote", DateTimeOffset.FromUnixTimeSeconds(1000)),
+        });
+
+        Assert.Equal(0, index.LoadBaseline()["p1"].LastRemoteVersion);
+    }
+
+    [Fact]
     public void SaveBaseline_LuegoLoad_PreservaLosDosHashesPorSeparado()
     {
         // Regresión directa del bugfix 2026-07-10: LastLocalHash y LastRemoteHash tienen que
@@ -200,5 +228,76 @@ public class SyncIndexTests : IDisposable
 
         Assert.Single(loaded);
         Assert.True(loaded.ContainsKey("t2"));
+    }
+
+    // ---- RekeyBaseline (Task 3.1/3.2, design §7): migración de ids sin dejar huérfanos ---------
+    // Riesgo #1 del slice 1a: si la baseline queda anclada al id VIEJO tras una reidentificación
+    // (pull trae un id canónico distinto para el mismo PathKey), el ítem aparece como "nuevo" bajo
+    // el id canónico y se pushea duplicado. RekeyBaseline mueve la fila completa al id nuevo, en la
+    // MISMA transacción (UPDATE del PK, no delete+insert -- para no perder ningún campo).
+
+    [Fact]
+    public void RekeyBaseline_MueveLaEntradaAlIdNuevo_YElIdViejoNoQuedaHuerfano()
+    {
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            ["id-viejo"] = new SyncBaselineItem("id-viejo", SyncItemKind.Project, "local-hash", "remote-hash", DateTimeOffset.FromUnixTimeSeconds(1000), LastRemoteVersion: 3),
+        });
+
+        index.RekeyBaseline("id-viejo", "id-nuevo");
+        var loaded = index.LoadBaseline();
+
+        Assert.False(loaded.ContainsKey("id-viejo"), "el id viejo no debe quedar huérfano en la baseline");
+        Assert.True(loaded.ContainsKey("id-nuevo"));
+        // El resto de los campos sobrevive intacto -- solo cambia el Id (y el propio campo Id del record).
+        Assert.Equal("id-nuevo", loaded["id-nuevo"].Id);
+        Assert.Equal("local-hash", loaded["id-nuevo"].LastLocalHash);
+        Assert.Equal("remote-hash", loaded["id-nuevo"].LastRemoteHash);
+        Assert.Equal(3, loaded["id-nuevo"].LastRemoteVersion);
+    }
+
+    [Fact]
+    public void RekeyBaseline_SinEntradaParaElIdViejo_NoHaceNadaNiTira()
+    {
+        var index = new SyncIndex(_dbPath);
+
+        index.RekeyBaseline("nunca-existio", "id-nuevo");
+
+        Assert.Empty(index.LoadBaseline());
+    }
+
+    // ---- SyncMeta / FullPullDone (Task 3.3/3.4, design §7) --------------------------------------
+    // El pull completo (since=null) tiene que correr UNA sola vez tras el upgrade a este modelo de
+    // identidad: con un pull incremental, un ítem que ya existe en el servidor pero no cambió desde
+    // `since` no vendría en el payload, no se mapearía, y se acuñaría un id nuevo -- duplicándolo.
+
+    [Fact]
+    public void HasCompletedFullPull_SinMarcar_DevuelveFalse()
+    {
+        var index = new SyncIndex(_dbPath);
+
+        Assert.False(index.HasCompletedFullPull());
+    }
+
+    [Fact]
+    public void MarkFullPullCompleted_LuegoHasCompletedFullPull_DevuelveTrue()
+    {
+        var index = new SyncIndex(_dbPath);
+
+        index.MarkFullPullCompleted();
+
+        Assert.True(index.HasCompletedFullPull());
+    }
+
+    [Fact]
+    public void MarkFullPullCompleted_EsIdempotente_NoTiraAlLlamarloDosVeces()
+    {
+        var index = new SyncIndex(_dbPath);
+
+        index.MarkFullPullCompleted();
+        index.MarkFullPullCompleted();
+
+        Assert.True(index.HasCompletedFullPull());
     }
 }

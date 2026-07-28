@@ -56,11 +56,16 @@ public sealed class SyncIndex
                     Id TEXT PRIMARY KEY,
                     Kind INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS SyncMeta (
+                    Key TEXT PRIMARY KEY,
+                    Value TEXT NOT NULL
+                );
                 """;
             cmd.ExecuteNonQuery();
         }
 
         MigrateAddLastRemoteHashColumnIfMissing(conn);
+        MigrateAddLastRemoteVersionColumnIfMissing(conn);
     }
 
     /// <summary>
@@ -85,14 +90,33 @@ public sealed class SyncIndex
         alterCmd.ExecuteNonQuery();
     }
 
-    private static bool HasLastRemoteHashColumn(SqliteConnection conn)
+    private static bool HasLastRemoteHashColumn(SqliteConnection conn) => HasColumn(conn, "LastRemoteHash");
+
+    /// <summary>
+    /// Migración aditiva (Task 2.2, ADR-07e): las bases de datos creadas ANTES de esta versión no
+    /// tienen la columna <c>LastRemoteVersion</c>. Mismo patrón que
+    /// <see cref="MigrateAddLastRemoteHashColumnIfMissing"/>: <c>ALTER TABLE</c> con default 0 para
+    /// las filas viejas -- el próximo pull refresca el valor real vía la reconciliación
+    /// incondicional (Phase 4), sin romper ni perder nada mientras tanto.
+    /// </summary>
+    private static void MigrateAddLastRemoteVersionColumnIfMissing(SqliteConnection conn)
+    {
+        if (HasColumn(conn, "LastRemoteVersion"))
+            return;
+
+        using var alterCmd = conn.CreateCommand();
+        alterCmd.CommandText = "ALTER TABLE SyncBaseline ADD COLUMN LastRemoteVersion INTEGER NOT NULL DEFAULT 0";
+        alterCmd.ExecuteNonQuery();
+    }
+
+    private static bool HasColumn(SqliteConnection conn, string columnName)
     {
         using var checkCmd = conn.CreateCommand();
         checkCmd.CommandText = "PRAGMA table_info(SyncBaseline)";
         using var reader = checkCmd.ExecuteReader();
         while (reader.Read())
         {
-            if (string.Equals(reader.GetString(1), "LastRemoteHash", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
                 return true;
         }
         return false;
@@ -117,7 +141,7 @@ public sealed class SyncIndex
 
         using var conn = Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT Id, Kind, ContentHash, LastRemoteHash, UpdatedAt, Deleted FROM SyncBaseline";
+        cmd.CommandText = "SELECT Id, Kind, ContentHash, LastRemoteHash, UpdatedAt, Deleted, LastRemoteVersion FROM SyncBaseline";
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
@@ -127,7 +151,8 @@ public sealed class SyncIndex
             var lastRemoteHash = reader.GetString(3);
             var updatedAt = DateTimeOffset.Parse(reader.GetString(4));
             var deleted = reader.GetInt32(5) != 0;
-            result[id] = new SyncBaselineItem(id, kind, lastLocalHash, lastRemoteHash, updatedAt, deleted);
+            var lastRemoteVersion = reader.GetInt32(6);
+            result[id] = new SyncBaselineItem(id, kind, lastLocalHash, lastRemoteHash, updatedAt, deleted, lastRemoteVersion);
         }
 
         return result;
@@ -151,8 +176,8 @@ public sealed class SyncIndex
             using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
             cmd.CommandText = """
-                INSERT INTO SyncBaseline (Id, Kind, ContentHash, LastRemoteHash, UpdatedAt, Deleted)
-                VALUES ($id, $kind, $hash, $remoteHash, $updatedAt, $deleted)
+                INSERT INTO SyncBaseline (Id, Kind, ContentHash, LastRemoteHash, UpdatedAt, Deleted, LastRemoteVersion)
+                VALUES ($id, $kind, $hash, $remoteHash, $updatedAt, $deleted, $lastRemoteVersion)
                 """;
             cmd.Parameters.AddWithValue("$id", item.Id);
             cmd.Parameters.AddWithValue("$kind", (int)item.Kind);
@@ -160,8 +185,33 @@ public sealed class SyncIndex
             cmd.Parameters.AddWithValue("$remoteHash", item.LastRemoteHash);
             cmd.Parameters.AddWithValue("$updatedAt", item.UpdatedAt.ToString("o"));
             cmd.Parameters.AddWithValue("$deleted", item.Deleted ? 1 : 0);
+            cmd.Parameters.AddWithValue("$lastRemoteVersion", item.LastRemoteVersion);
             cmd.ExecuteNonQuery();
         }
+
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Migra la entrada de baseline de <paramref name="oldId"/> a <paramref name="newId"/>
+    /// (Task 3.2, design §7): un item ya mapeado a un id que el pull re-identifica con otro id
+    /// (reconciliación incondicional, Phase 4) necesita que su fila de baseline se MUEVA -- no que
+    /// se duplique -- para no aparecer como "nuevo" bajo el id canónico y pushearse duplicado
+    /// (Riesgo #1 del slice 1a). UPDATE del PK dentro de una transacción (no delete+insert) para
+    /// preservar el resto de los campos (hashes, UpdatedAt, Deleted, LastRemoteVersion) intactos.
+    /// No-op si <paramref name="oldId"/> no tiene entrada (nada que migrar).
+    /// </summary>
+    public void RekeyBaseline(string oldId, string newId)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "UPDATE SyncBaseline SET Id = $newId WHERE Id = $oldId";
+        cmd.Parameters.AddWithValue("$newId", newId);
+        cmd.Parameters.AddWithValue("$oldId", oldId);
+        cmd.ExecuteNonQuery();
 
         tx.Commit();
     }
@@ -261,5 +311,38 @@ public sealed class SyncIndex
         }
 
         tx.Commit();
+    }
+
+    // ---- SyncMeta / pull completo único (Task 3.3/3.4, design §7) -------------------------------
+    // El pull completo (since=null forzado) tiene que correr UNA sola vez tras el upgrade a este
+    // modelo de identidad: con un pull incremental, un ítem que ya existe en el servidor pero no
+    // cambió desde `since` no vendría en el payload, no se mapearía a SyncIdMap, y el próximo scan
+    // le acuñaría un id NUEVO -- duplicándolo en el servidor (Riesgo #1 del slice 1a).
+
+    private const string FullPullDoneKey = "FullPullDone";
+
+    /// <summary>Si ya corrió el pull completo (since=null) posterior al upgrade a ids canónicos.</summary>
+    public bool HasCompletedFullPull()
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Value FROM SyncMeta WHERE Key = $key";
+        cmd.Parameters.AddWithValue("$key", FullPullDoneKey);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read();
+    }
+
+    /// <summary>
+    /// Marca el pull completo como hecho. Idempotente (<c>INSERT OR REPLACE</c>, mismo patrón que
+    /// <see cref="AddLocalTombstone"/>): llamarlo de nuevo no rompe nada.
+    /// </summary>
+    public void MarkFullPullCompleted()
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT OR REPLACE INTO SyncMeta (Key, Value) VALUES ($key, $value)";
+        cmd.Parameters.AddWithValue("$key", FullPullDoneKey);
+        cmd.Parameters.AddWithValue("$value", "true");
+        cmd.ExecuteNonQuery();
     }
 }

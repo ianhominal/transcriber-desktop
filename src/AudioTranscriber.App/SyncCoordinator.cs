@@ -756,8 +756,13 @@ public sealed partial class SyncCoordinator : ObservableObject
     /// (dentro de <paramref name="project"/>), para que el próximo ciclo de sync la pushee como
     /// borrada (ver <see cref="SyncIndex.AddLocalTombstone"/> y
     /// <see cref="Sync.SyncEngine"/>.MergeWithLocalTombstones en Core). Resuelve el id EXACTO que
-    /// generaría un scan real (<see cref="LocalScanner.ResolveTranscriptionId"/>), usando el mismo
+    /// ya conoce el sync (<see cref="LocalScanner.ResolveTranscriptionId"/>), usando el mismo
     /// idMap que ya persiste <see cref="SyncIndex"/>.
+    /// <para/>
+    /// ADR-06: sin <c>idMap</c> entry el id es <c>null</c> -- "no se sabe qué borrar" (nunca se
+    /// sintetiza un id por inferencia, ver el comentario de <see cref="LocalScanner.ResolveTranscriptionId"/>).
+    /// Sin id no hay nada que tombstonear: el item nunca llegó a sincronizarse, así que el servidor
+    /// tampoco tiene fila que borrar.
     /// <para/>
     /// Defensivo a propósito: si todavía no hay carpeta de sync configurada, o el índice no se
     /// puede abrir (disco, permisos, DB bloqueada), esto no debe impedir que el borrado LOCAL --
@@ -776,6 +781,8 @@ public sealed partial class SyncCoordinator : ObservableObject
             var idMap = index.LoadIdMap();
             var projectName = project.IsGeneral ? null : project.Name;
             var id = LocalScanner.ResolveTranscriptionId(projectName, audio.FileName, idMap);
+            if (id is null)
+                return; // no se sabe qué borrar (nunca se sincronizó): no hay tombstone que registrar.
             index.AddLocalTombstone(id, SyncItemKind.Transcription);
         }
         catch

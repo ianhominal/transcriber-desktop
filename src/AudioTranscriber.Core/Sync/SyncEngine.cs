@@ -77,6 +77,7 @@ public sealed class SyncEngine
     private readonly string _rootPath;
     private readonly string _backendBaseUrl;
     private readonly AudioCompressor _compressor = new();
+    private readonly ConflictResolver _conflictResolver = new();
 
     public SyncEngine(
         SyncApiClient apiClient,
@@ -126,8 +127,37 @@ public sealed class SyncEngine
         var idOverrides = await Task.Run(() => _index.LoadIdMap(), ct);
         var localTombstones = await Task.Run(() => _index.LoadLocalTombstones(), ct);
 
-        var pull = await _api.PullAsync(accessToken, since, ct);
+        // Task 4.5 (design §7): el pull completo (since=null) tiene que correr UNA sola vez tras
+        // el upgrade al modelo de identidad canónica -- con un pull incremental, un ítem que ya
+        // existe en el servidor pero no cambió desde `since` no vendría en el payload, no se
+        // backfillearía a SyncIdMap (ver reconciliación de más abajo), y el próximo scan le
+        // acuñaría un id NUEVO -- duplicándolo (Riesgo #1). Se ignora el `since` que mande el
+        // caller mientras SyncMeta.FullPullDone no esté marcado; se marca al final de este método,
+        // solo tras un ciclo que efectivamente persiste (ver el cierre de RunAsync).
+        var hasCompletedFullPull = await Task.Run(() => _index.HasCompletedFullPull(), ct);
+        var effectiveSince = hasCompletedFullPull ? since : null;
+
+        var pull = await _api.PullAsync(accessToken, effectiveSince, ct);
         var remote = _remoteMapper.Map(pull);
+
+        // ---- Fase 4 (ADR-06 §7, Riesgo #1): backfill incondicional de IDENTIDAD -----------------
+        // Corre ANTES del scan local de la línea de abajo (design §5, paso 3 antes que el 4) -- si
+        // corriera después, un proyecto/transcripción YA LOCAL que este ciclo trae por PullUpsert
+        // generaría un id FANTASMA en ese scan (el override todavía no existiría en ese momento) y
+        // ese fantasma se pushearía como si fuera un ítem nuevo -- duplicado en el servidor. Ese
+        // es exactamente el bug real que dejaba pasar sin que nadie lo notara
+        // RunAsync_PullUpsertDeProyectoYaLocalConColor_PreservaElColorEnDisco (nunca inspeccionaba
+        // los requests de push) -- ver el test explícito
+        // RunAsync_PullUpsertDeProyectoYaLocalSinIdMapPrevio_NoGeneraUnPushUpsertFantasmaDelIdRecienAcunado.
+        // Recorre TODAS las filas del pull, tengan o no acción en el Plan de más abajo: en régimen
+        // la mayoría de los ítems son "sin cambios" -- si el mapeo PathKey->id solo se registrara
+        // al ejecutar un PullUpsert (como pasaba antes de esta fase), esos ítems quedarían sin
+        // identidad y el próximo scan les acuñaría un id nuevo, duplicando el workspace entero.
+        // El rekey de baseline (si el PathKey ya apuntaba a OTRO id) es persistencia INMEDIATA en
+        // SQLite (ver SyncIndex.RekeyBaseline) -- no espera al SaveBaseline de fin de ciclo: es una
+        // corrección de identidad pura (nunca pierde datos), a diferencia del resto del ciclo, que
+        // recién persiste si no lo aborta el freno anti-borrado-masivo de más abajo.
+        ReconcileIdentityUnconditionally(pull, idOverrides, baseline);
 
         var localSnapshot = await Task.Run(() => _scanner.ScanDetailed(_rootPath, idOverrides), ct);
         var local = MergeWithLocalTombstones(localSnapshot.Items, baseline, localTombstones);
@@ -155,6 +185,21 @@ public sealed class SyncEngine
                 "sin cambios respecto a la última sync (omitidas, ya existían).");
         }
 
+        // ---- Fase 4 (ADR-07e): refresco incondicional de LastRemoteVersion para lo "sin acción" -
+        // Los ítems que NO generaron acción este ciclo (los mismos que arriba, omittedProjects/
+        // omittedTranscriptions) son EXACTAMENTE los que ADR-07e necesita cubrir: el trigger del
+        // server puede subir `version` sin que el hash de CONTENIDO cambie (p.ej. un upsert
+        // idempotente re-mandando deleted_at:null) -- si su LastRemoteVersion nunca se refresca,
+        // su próximo push legítimo manda un base_version viejo y el servidor lo rechaza por
+        // "conflict" para siempre (el "sync trabado" que describe el design). Deliberadamente
+        // EXCLUYE los ítems CON acción este ciclo -- en particular los que están en conflicto
+        // (Phase 5): un ítem en conflicto necesita mandar el base_version ANTERIOR a este pull (el
+        // que el cliente realmente conocía al hacer su edición local), no el que este mismo pull
+        // acaba de revelar -- si se refrescara acá también, el push mandaría un base_version que
+        // YA coincide con el actual del servidor, y el conflicto real (alguien más editó primero)
+        // pasaría desapercibido, pisando esa otra edición en silencio.
+        RefreshRemoteVersionForUnchangedItems(pull, actionIds, baseline);
+
         // Freno anti-borrado-masivo: nunca se evalúa contra una baseline vacía (primer arranque),
         // porque ahí no puede haber "borrados" reales todavía (ver regla 3 del diseño).
         if (!forceConfirmDeletes && baseline.Count > 0 && deleteCount > baseline.Count * MassDeletionThreshold)
@@ -174,6 +219,21 @@ public sealed class SyncEngine
         var ws = Workspace.OpenOrCreate(_rootPath);
         var newBaseline = new Dictionary<string, SyncBaselineItem>(baseline);
         var newIdOverrides = new Dictionary<string, string>(idOverrides);
+        // version por id tal como vino en ESTE pull (Task 4.6c) -- usado por BuildBaselineEntry
+        // para que un PullUpsert (nunca un push, ver el comentario ahí) adopte la version fresca
+        // en vez de quedar en 0 para un ítem que recién se sincroniza por primera vez.
+        var remoteVersionsById = BuildRemoteVersionsById(pull);
+
+        // ADR-06 (Task 1.6): los ids que el primer scan (línea ~132) tuvo que ACUÑAR de cero
+        // (LocalSnapshot.MintedIds) se mergean YA en newIdOverrides -- antes de que nada más los
+        // pueda pisar -- para que (a) el rescan de más abajo (línea ~286) reutilice el MISMO id vía
+        // override en vez de acuñar uno random distinto, y (b) SaveIdMap (al final del ciclo) los
+        // persista SIEMPRE, incluso si el push de este ciclo falla: son identidad, no estado de
+        // sync, y re-acuñarlos en el próximo ciclo duplicaría el item en el servidor (Riesgo #1 del
+        // design). ReconcilePushResponse (más abajo) revierte newBaseline ante un push rechazado,
+        // pero NUNCA toca newIdOverrides -- el id acuñado sobrevive.
+        foreach (var (pathKey, mintedId) in localSnapshot.MintedIds)
+            newIdOverrides[pathKey] = mintedId;
 
         // Resuelve el nombre de carpeta de un proyecto por su id remoto, para poder ubicar
         // transcripciones bajadas dentro de su proyecto (se va completando a medida que se
@@ -198,11 +258,11 @@ public sealed class SyncEngine
                 switch (action.Type)
                 {
                     case SyncActionType.PushUpsert when action.Kind == SyncItemKind.Project:
-                        ExecutePushProjectUpsert(action, localSnapshot, pushProjects);
+                        ExecutePushProjectUpsert(action, localSnapshot, pushProjects, baseline);
                         break;
 
                     case SyncActionType.PushUpsert when action.Kind == SyncItemKind.Transcription:
-                        await ExecutePushTranscriptionUpsertAsync(action, localSnapshot, pushTranscriptions, accessToken, autoUploadUntranscribed, ct);
+                        await ExecutePushTranscriptionUpsertAsync(action, localSnapshot, pushTranscriptions, accessToken, autoUploadUntranscribed, baseline, ct);
                         break;
 
                     case SyncActionType.PushDelete when action.Kind == SyncItemKind.Project:
@@ -285,7 +345,7 @@ public sealed class SyncEngine
         {
             var rescan = (await Task.Run(() => _scanner.ScanDetailed(_rootPath, newIdOverrides), ct)).Items;
             foreach (var action in successfulActions)
-                newBaseline[action.Id] = BuildBaselineEntry(action, local, remote, baseline, rescan);
+                newBaseline[action.Id] = BuildBaselineEntry(action, local, remote, baseline, rescan, remoteVersionsById);
         }
 
         string? cascadeDeleteWarning = null;
@@ -298,11 +358,18 @@ public sealed class SyncEngine
             };
             var pushResponse = await _api.PushAsync(accessToken, request, ct);
             cascadeDeleteWarning = ReconcilePushResponse(
-                pushResponse, pushProjects, pushTranscriptions, baseline, newBaseline, localSnapshot);
+                pushResponse, pushProjects, pushTranscriptions, pull, baseline, newBaseline, localSnapshot);
         }
 
         await Task.Run(() => _index.SaveBaseline(newBaseline), ct);
         await Task.Run(() => _index.SaveIdMap(newIdOverrides), ct);
+
+        // Task 4.5: recién acá se marca el pull completo como hecho -- solo tras un ciclo que
+        // efectivamente llegó a persistir (si el freno anti-borrado-masivo abortó antes, esta
+        // línea nunca corre, y el próximo ciclo vuelve a forzar since=null hasta que el usuario
+        // confirme; ver el comentario largo al principio de este método).
+        if (!hasCompletedFullPull)
+            await Task.Run(() => _index.MarkFullPullCompleted(), ct);
 
         // Limpieza de tombstones ya resueltos (bug #1): un tombstone se da por resuelto si su id
         // terminó Deleted=true en la nueva baseline (el PushDelete se ejecutó y se pusheó con
@@ -367,14 +434,23 @@ public sealed class SyncEngine
     /// sincronizado un ítem que el servidor rechazó o ignoró en silencio.</item>
     /// </list>
     /// </summary>
-    private static string? ReconcilePushResponse(
+    private string? ReconcilePushResponse(
         PushResponse pushResponse,
         PushBucket<ProjectUpsert> pushProjects,
         PushBucket<TranscriptionUpsert> pushTranscriptions,
+        PullResponse pull,
         IReadOnlyDictionary<string, SyncBaselineItem> originalBaseline,
         Dictionary<string, SyncBaselineItem> newBaseline,
         LocalSnapshot localSnapshot)
     {
+        // Task 5.4/Phase 7 (ADR-07c/d/e): procesa CADA entrada de results[] -- "conflict" (archivo
+        // hermano + adopta la version del servidor) y "ok" (Phase 7: refresca LastRemoteVersion con
+        // la version que el server efectivamente aplicó, ver ProcessPushResults) -- corre SIEMPRE,
+        // incluso si errors[] viene vacío (ninguno de los dos status se agrega nunca a errors[] del
+        // lado del backend, ver web/src/app/api/sync/push/route.ts), así que no puede quedar detrás
+        // del early-return de abajo.
+        var resolvedConflictIds = ProcessPushResults(pushResponse, pull, originalBaseline, newBaseline, localSnapshot);
+
         if (pushResponse.Errors.Count == 0)
             return null;
 
@@ -402,16 +478,105 @@ public sealed class SyncEngine
 
         // Cualquier error que no haya matcheado el patrón de arriba deja el resto del batch de
         // este ciclo como "no confirmado" -- se revierte, no se da por sincronizado a ciegas.
+        // Excluye los ids que ResolveConflicts YA resolvió arriba (archivo hermano + baseline con
+        // la version adoptada): revertirlos de nuevo acá no perdería el archivo (eso no se
+        // deshace), pero sí pisaría la version adoptada con la vieja -- el próximo push de ese id
+        // volvería a mandar un base_version stale y generaría un conflicto redundante.
         if (resolvedErrorCount < pushResponse.Errors.Count)
         {
             foreach (var id in pushProjects.Upserts.Select(p => p.Id).Concat(pushProjects.Deletes).Distinct())
-                RevertBaselineEntry(id, originalBaseline, newBaseline);
+                if (!resolvedConflictIds.Contains(id))
+                    RevertBaselineEntry(id, originalBaseline, newBaseline);
 
             foreach (var id in pushTranscriptions.Upserts.Select(t => t.Id).Concat(pushTranscriptions.Deletes).Distinct())
-                RevertBaselineEntry(id, originalBaseline, newBaseline);
+                if (!resolvedConflictIds.Contains(id))
+                    RevertBaselineEntry(id, originalBaseline, newBaseline);
         }
 
         return warnings is null ? null : string.Join(" ", warnings);
+    }
+
+    /// <summary>
+    /// Task 5.4/Phase 7 (ADR-07c/d/e): resuelve cada entrada de <see cref="PushResponse.Results"/>.
+    /// Dos status relevantes acá (<c>"error"</c> no trae <c>version</c>, no hay nada que refrescar):
+    /// <list type="bullet">
+    /// <item><c>"conflict"</c> (Task 5.4): para una transcripción con copia remota disponible en el
+    /// pull de ESTE MISMO ciclo (<paramref name="pull"/>), delega en <see cref="ConflictResolver"/>
+    /// (archivo hermano + ruta canónica con la copia remota) y adopta la <c>version</c> del
+    /// servidor en la baseline. Para un proyecto en conflicto, o una transcripción sin copia
+    /// remota en este pull (no debería pasar en régimen normal -- "conflict" implica que la fila
+    /// YA existe -- pero sin la copia remota acá no hay con qué reconciliar un archivo hermano):
+    /// se revierte de forma conservadora, igual que un error genérico -- se reintenta el próximo
+    /// ciclo, cero pérdida (nunca se pisa la copia local con nada).</item>
+    /// <item><c>"ok"</c> (Phase 7, gap dejado explícito por Task 5.4): <see cref="BuildBaselineEntry"/>
+    /// PRESERVA a propósito el <see cref="SyncBaselineItem.LastRemoteVersion"/> previo para un push
+    /// (el <c>base_version</c> mandado se calculó contra ese valor viejo, ver el comentario largo en
+    /// <see cref="RunAsync"/>) -- así que sin este paso, un push aceptado deja la baseline con la
+    /// version DE ANTES de este mismo push. El próximo push de ese mismo id (sin pasar por otro pull
+    /// de por medio) mandaría ese <c>base_version</c> viejo, y el servidor lo rechazaría como
+    /// "conflict" contra su propia escritura recién aceptada -- el "sync trabado" de ADR-07e,
+    /// disparado por el propio cliente. Acá se adopta la <c>version</c> que el server realmente
+    /// aplicó (la que <c>results[]</c> devuelve para "ok", ver <c>web/src/app/api/sync/push/route.ts</c>).</item>
+    /// </list>
+    /// Devuelve los ids resueltos vía <see cref="ConflictResolver"/> ("conflict"), para que el
+    /// revert-todo por error genérico (más arriba en <see cref="ReconcilePushResponse"/>) no los
+    /// pise de nuevo. Los ids "ok" NO se agregan a ese set a propósito: si este mismo push trae
+    /// además un error sin resolver en otro ítem, el revert-todo conservador de más arriba sigue
+    /// aplicando (preferible reintentar de más que dar por confirmada una version que en realidad
+    /// vino en un batch parcialmente rechazado).
+    /// </summary>
+    private HashSet<string> ProcessPushResults(
+        PushResponse pushResponse,
+        PullResponse pull,
+        IReadOnlyDictionary<string, SyncBaselineItem> originalBaseline,
+        Dictionary<string, SyncBaselineItem> newBaseline,
+        LocalSnapshot localSnapshot)
+    {
+        var resolved = new HashSet<string>();
+
+        foreach (var result in pushResponse.Results)
+        {
+            if (result.Version is not int version)
+                continue; // "error": sin version, nada que adoptar acá (ver errors[]/results[] arriba).
+
+            if (result.Status == "ok")
+            {
+                var kind = result.Kind == "project" ? SyncItemKind.Project : SyncItemKind.Transcription;
+                UpdateAdoptedVersion(result.Id, kind, version, originalBaseline, newBaseline);
+                continue;
+            }
+
+            if (result.Status != "conflict")
+                continue;
+
+            if (result.Kind == "transcription" && localSnapshot.Transcriptions.TryGetValue(result.Id, out var localEntry))
+            {
+                var remoteTranscription = pull.Transcriptions.FirstOrDefault(t => t.Id == result.Id);
+                if (remoteTranscription is not null)
+                {
+                    _conflictResolver.Resolve(
+                        result.Id, version, localEntry.TranscriptPath, remoteTranscription.Text, DateTimeOffset.UtcNow);
+                    UpdateAdoptedVersion(result.Id, SyncItemKind.Transcription, version, originalBaseline, newBaseline);
+                    resolved.Add(result.Id);
+                    continue;
+                }
+            }
+
+            RevertBaselineEntry(result.Id, originalBaseline, newBaseline);
+        }
+
+        return resolved;
+    }
+
+    private static void UpdateAdoptedVersion(
+        string id, SyncItemKind kind, int adoptedVersion,
+        IReadOnlyDictionary<string, SyncBaselineItem> originalBaseline,
+        Dictionary<string, SyncBaselineItem> newBaseline)
+    {
+        var current = newBaseline.TryGetValue(id, out var n) ? n
+            : originalBaseline.TryGetValue(id, out var o) ? o
+            : new SyncBaselineItem(id, kind, "", "", DateTimeOffset.UtcNow);
+        newBaseline[id] = current with { LastRemoteVersion = adoptedVersion };
     }
 
     /// <summary>
@@ -457,7 +622,8 @@ public sealed class SyncEngine
         IReadOnlyDictionary<string, SyncItemState> local,
         IReadOnlyDictionary<string, SyncItemState> remote,
         IReadOnlyDictionary<string, SyncBaselineItem> previousBaseline,
-        IReadOnlyDictionary<string, SyncItemState> rescan)
+        IReadOnlyDictionary<string, SyncItemState> rescan,
+        IReadOnlyDictionary<string, int> remoteVersionsById)
     {
         var isDelete = action.Type is SyncActionType.PushDelete or SyncActionType.PullDelete;
         var isPush = action.Type is SyncActionType.PushUpsert or SyncActionType.PushDelete;
@@ -486,12 +652,136 @@ public sealed class SyncEngine
             ? r.ContentHash
             : previousBaseline.TryGetValue(action.Id, out var pb2) ? pb2.LastRemoteHash : string.Empty;
 
-        return new SyncBaselineItem(action.Id, action.Kind, lastLocalHash, lastRemoteHash, updatedAt, isDelete);
+        // Task 4.6c/ADR-07e: LastRemoteVersion. Para un PULL (!isPush) se adopta la version que
+        // este MISMO pull acaba de traer -- se está aplicando ese contenido remoto ahora mismo,
+        // así que es seguro (y necesario: sin esto, un ítem que se sincroniza por primera vez vía
+        // PullUpsert quedaría con LastRemoteVersion=0 en vez de su version real). Para un PUSH
+        // (incluido un conflicto, Phase 5) se PRESERVA la que ya tenía la baseline -- nunca se
+        // adopta la de este pull acá: el base_version que se mandó en este push se calculó ANTES
+        // de este bloque (ver ResolveBaseVersion) contra el valor viejo A PROPÓSITO, para que el
+        // servidor pueda detectar una escritura basada en datos desactualizados; adoptar acá la
+        // version fresca enmascararía ese conflicto real (ver el comentario largo en RunAsync).
+        var lastRemoteVersion = !isPush && remoteVersionsById.TryGetValue(action.Id, out var freshVersion)
+            ? freshVersion
+            : previousBaseline.TryGetValue(action.Id, out var pbVersion) ? pbVersion.LastRemoteVersion : 0;
+
+        return new SyncBaselineItem(action.Id, action.Kind, lastLocalHash, lastRemoteHash, updatedAt, isDelete, lastRemoteVersion);
+    }
+
+    /// <summary>
+    /// Task 4.6/ADR-06 §7: backfill incondicional de identidad (PathKey -&gt; id canónico) más
+    /// rekey de baseline, para CADA fila del pull -- tenga o no acción en <see cref="SyncPlanner.Plan"/>.
+    /// No toca <see cref="SyncBaselineItem.LastRemoteVersion"/> -- ver
+    /// <see cref="RefreshRemoteVersionForUnchangedItems"/>, que corre DESPUÉS del Plan (necesita
+    /// saber qué ítems generaron acción, ver el comentario largo en <see cref="RunAsync"/>).
+    /// </summary>
+    private void ReconcileIdentityUnconditionally(
+        PullResponse pull,
+        Dictionary<string, string> idOverrides,
+        Dictionary<string, SyncBaselineItem> baseline)
+    {
+        // Nombre de carpeta por id de proyecto: lo que YA se sabía (idOverrides invertido) más lo
+        // que este MISMO pull trae -- hace falta para derivar el PathKey de una transcripción, que
+        // depende del nombre de carpeta de su proyecto, no de su id.
+        var projectNameById = new Dictionary<string, string>();
+        foreach (var (pathKey, id) in idOverrides)
+        {
+            if (pathKey.StartsWith(ProjectPathKeyPrefix, StringComparison.Ordinal))
+                projectNameById[id] = pathKey[ProjectPathKeyPrefix.Length..];
+        }
+
+        foreach (var project in pull.Projects)
+        {
+            // El servidor manda el nombre TAL CUAL lo tipeó el usuario -- el PathKey local siempre
+            // se deriva del nombre de CARPETA, que es el nombre YA saneado (Workspace.Sanitize,
+            // mismo criterio que ExecutePullProjectUpsert/LocalScanner). Sin este saneado acá, un
+            // nombre con caracteres inválidos de Windows generaría un PathKey que nunca calza con
+            // el que computa un scan posterior sobre la carpeta real -- mismo criterio que protege
+            // el caso huérfano-por-stem (LocalScanner.cs:806-807), que no puede regresionar.
+            var folderName = Workspace.Sanitize(project.Name);
+            projectNameById[project.Id] = folderName;
+            ReconcileIdentityRow(LocalScanner.ProjectPathKey(folderName), project.Id, idOverrides, baseline);
+        }
+
+        foreach (var transcription in pull.Transcriptions)
+        {
+            string? projectFolder = null;
+            if (transcription.ProjectId is not null && !projectNameById.TryGetValue(transcription.ProjectId, out projectFolder))
+            {
+                // Sin proyecto conocido TODAVÍA este ciclo (el pull puede traer la transcripción
+                // antes que su proyecto, o el proyecto remoto todavía no existe localmente): no
+                // hay PathKey que backfillear acá. Si este ítem genera acción,
+                // ExecutePullTranscriptionUpsertAsync lo resuelve como siempre (aloja en General +
+                // diagnóstico); si no generó acción, es porque YA estaba sincronizado con un
+                // override que viene de un ciclo anterior -- nada que perder.
+                continue;
+            }
+
+            ReconcileIdentityRow(
+                LocalScanner.TranscriptionPathKey(projectFolder, transcription.AudioName),
+                transcription.Id, idOverrides, baseline);
+        }
+    }
+
+    private const string ProjectPathKeyPrefix = "project:";
+
+    private void ReconcileIdentityRow(
+        string pathKey, string canonicalId,
+        Dictionary<string, string> idOverrides, Dictionary<string, SyncBaselineItem> baseline)
+    {
+        if (idOverrides.TryGetValue(pathKey, out var previousId) && previousId != canonicalId)
+        {
+            // Task 4.3/ADR-06 §7: el PathKey ya apuntaba a OTRO id -- el ítem se re-identificó
+            // (p.ej. migración de un id de bootstrap a uno canónico). RekeyBaseline mueve la fila
+            // en SQLite YA MISMO (no espera al SaveBaseline de fin de ciclo, ver el comentario
+            // largo en RunAsync) para que no quede una entrada huérfana bajo el id viejo, que se
+            // pushearía como duplicado.
+            _index.RekeyBaseline(previousId, canonicalId);
+            if (baseline.Remove(previousId, out var movedEntry))
+                baseline[canonicalId] = movedEntry;
+        }
+
+        idOverrides[pathKey] = canonicalId;
+    }
+
+    /// <summary>ADR-07e: refresca <see cref="SyncBaselineItem.LastRemoteVersion"/> SOLO para los
+    /// ítems del pull que este ciclo NO generaron ninguna acción -- ver el comentario largo sobre
+    /// por qué los ítems CON acción (en particular los que están en conflicto) quedan
+    /// deliberadamente afuera, en <see cref="RunAsync"/>.</summary>
+    private static void RefreshRemoteVersionForUnchangedItems(
+        PullResponse pull, HashSet<string> actionIds, Dictionary<string, SyncBaselineItem> baseline)
+    {
+        foreach (var project in pull.Projects)
+            RefreshRemoteVersionIfUnchanged(project.Id, project.Version, actionIds, baseline);
+
+        foreach (var transcription in pull.Transcriptions)
+            RefreshRemoteVersionIfUnchanged(transcription.Id, transcription.Version, actionIds, baseline);
+    }
+
+    private static void RefreshRemoteVersionIfUnchanged(
+        string id, int version, HashSet<string> actionIds, Dictionary<string, SyncBaselineItem> baseline)
+    {
+        if (actionIds.Contains(id))
+            return;
+        if (baseline.TryGetValue(id, out var existing))
+            baseline[id] = existing with { LastRemoteVersion = version };
+    }
+
+    private static Dictionary<string, int> BuildRemoteVersionsById(PullResponse pull)
+    {
+        var result = new Dictionary<string, int>();
+        foreach (var project in pull.Projects)
+            result[project.Id] = project.Version;
+        foreach (var transcription in pull.Transcriptions)
+            result[transcription.Id] = transcription.Version;
+        return result;
     }
 
     // ---- Push ---------------------------------------------------------------
 
-    private static void ExecutePushProjectUpsert(SyncAction action, LocalSnapshot local, PushBucket<ProjectUpsert> bucket)
+    private static void ExecutePushProjectUpsert(
+        SyncAction action, LocalSnapshot local, PushBucket<ProjectUpsert> bucket,
+        IReadOnlyDictionary<string, SyncBaselineItem> baseline)
     {
         var entry = local.Projects[action.Id];
         bucket.Upserts.Add(new ProjectUpsert
@@ -499,8 +789,19 @@ public sealed class SyncEngine
             Id = entry.Id,
             Name = entry.Title,
             Description = entry.Description,
+            BaseVersion = ResolveBaseVersion(action.Id, baseline),
         });
     }
+
+    /// <summary>
+    /// version que el cliente conoce para este id (ADR-07c/g): viene de la baseline (último
+    /// version remoto refrescado en el pull previo). Un ítem sin entrada en baseline es NUEVO --
+    /// nunca se sincronizó -- así que no hay base contra la cual comparar: <c>null</c> (se omite
+    /// del JSON, ver <see cref="ProjectUpsert.BaseVersion"/>/<see cref="TranscriptionUpsert.BaseVersion"/>),
+    /// nunca un 0 falso que el servidor interpretaría como "yo tenía la versión inicial".
+    /// </summary>
+    private static int? ResolveBaseVersion(string id, IReadOnlyDictionary<string, SyncBaselineItem> baseline) =>
+        baseline.TryGetValue(id, out var item) ? item.LastRemoteVersion : null;
 
     /// <summary>
     /// Bugfix 2026-07-21 (no respetar el motor elegido): para un audio SIN transcripción local, el
@@ -518,7 +819,7 @@ public sealed class SyncEngine
     /// </summary>
     private async Task ExecutePushTranscriptionUpsertAsync(
         SyncAction action, LocalSnapshot local, PushBucket<TranscriptionUpsert> bucket, string accessToken,
-        bool autoUploadUntranscribed, CancellationToken ct)
+        bool autoUploadUntranscribed, IReadOnlyDictionary<string, SyncBaselineItem> baseline, CancellationToken ct)
     {
         var entry = local.Transcriptions[action.Id];
 
@@ -543,6 +844,7 @@ public sealed class SyncEngine
             // local (solo actualizar una que no existe -> se perdía en silencio). Ver
             // TranscriptionUpsert y /api/sync/push.
             AudioName = entry.AudioFileName,
+            BaseVersion = ResolveBaseVersion(action.Id, baseline),
         });
     }
 

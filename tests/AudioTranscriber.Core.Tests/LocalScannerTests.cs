@@ -82,10 +82,16 @@ public class LocalScannerTests : IDisposable
     [Fact]
     public void Scan_CarpetaSinCambios_ProduceMismoContentHash()
     {
+        // ADR-06: por default el id ya NO es estable entre scans (se acuña random sin override,
+        // ver Scan_MismoPathKeySinOverride_GeneraUnUuidDistintoEnCadaScan) -- eso es intencional y
+        // no lo que este test cubre. Acá interesa una propiedad DISTINTA (el ContentHash de un item
+        // sin cambios es reproducible), así que se fija el id vía mintId determinístico SOLO para
+        // poder comparar por clave entre los dos scans.
         SeedWorkspace();
+        Func<string, string> mintId = pathKey => pathKey;
 
-        var first = _scanner.Scan(_root);
-        var second = _scanner.Scan(_root);
+        var first = _scanner.ScanDetailed(_root, mintId: mintId).Items;
+        var second = _scanner.ScanDetailed(_root, mintId: mintId).Items;
 
         Assert.Equal(first.Keys.OrderBy(k => k), second.Keys.OrderBy(k => k));
         foreach (var id in first.Keys)
@@ -130,17 +136,65 @@ public class LocalScannerTests : IDisposable
     }
 
     [Fact]
-    public void Scan_MismoPathKey_GeneraSiempreElMismoUuid_SinNecesidadDePersistirNada()
+    public void Scan_MismoPathKeySinOverride_GeneraUnUuidDistintoEnCadaScan()
     {
-        // El id derivado del hash es puro y determinístico: no hace falta que el id-map de
-        // SyncIndex lo persista para que sea estable entre ciclos (a diferencia de un
-        // Guid.NewGuid() aleatorio, que sí lo necesitaría).
+        // ADR-06: HashId (determinístico) desaparece del camino de identidad -- la determinismo
+        // ERA el bug (CRÍTICO-1: dos cuentas con el mismo nombre de proyecto colisionaban). El id
+        // por default ahora es un UUIDv4 aleatorio, acuñado de nuevo en CADA scan que no tenga un
+        // idOverride para ese PathKey. Por eso la estabilidad entre ciclos ya NO es responsabilidad
+        // de LocalScanner: la persiste SyncEngine vía MintedIds -> SyncIndex.SaveIdMap (ver
+        // SyncEngineTests, "el id acuñado sobrevive a un push que falla").
         SeedWorkspace();
 
         var first = _scanner.ScanDetailed(_root).Projects.Values.Single().Id;
         var second = _scanner.ScanDetailed(_root).Projects.Values.Single().Id;
 
-        Assert.Equal(first, second);
+        Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public void Scan_ConMintIdInyectado_UsaEseDelegadoEnVezDeGenerarUnIdAleatorio()
+    {
+        // Task 1.1: el caller (SyncEngine) inyecta CÓMO acuñar un id nuevo -- ScanDetailed ya no
+        // decide por su cuenta (ni HashId determinístico, ni Guid.NewGuid implícito e inyectable).
+        SeedWorkspace();
+
+        var snapshot = _scanner.ScanDetailed(_root, mintId: _ => "id-acunado-fijo");
+
+        var project = snapshot.Projects.Values.Single();
+        Assert.Equal("id-acunado-fijo", project.Id);
+    }
+
+    [Fact]
+    public void Scan_SinOverride_RegistraElParPathKeyIdEnMintedIds()
+    {
+        // MintedIds es lo que SyncEngine mergea en su propio mapa de overrides inmediatamente
+        // después del primer scan del ciclo (ver diseño ADR-06.2/3) para que el id acuñado
+        // sobreviva al rescan y se persista aunque el push falle.
+        SeedWorkspace();
+        var projectPathKey = LocalScanner.ProjectPathKey("Trabajo");
+        var transcriptionPathKey = LocalScanner.TranscriptionPathKey("Trabajo", "reunion.mp3");
+
+        var snapshot = _scanner.ScanDetailed(_root);
+
+        Assert.True(snapshot.MintedIds.ContainsKey(projectPathKey));
+        Assert.Equal(snapshot.Projects.Values.Single().Id, snapshot.MintedIds[projectPathKey]);
+        Assert.True(snapshot.MintedIds.ContainsKey(transcriptionPathKey));
+        Assert.Equal(snapshot.Transcriptions.Values.Single().Id, snapshot.MintedIds[transcriptionPathKey]);
+    }
+
+    [Fact]
+    public void Scan_ConIdOverride_NoRegistraEseItemEnMintedIds()
+    {
+        // Un item resuelto por override NO se "acuñó" en este scan -- no debe aparecer en
+        // MintedIds (si no, SyncEngine lo re-guardaría como si fuera nuevo).
+        SeedWorkspace();
+        var pathKey = LocalScanner.ProjectPathKey("Trabajo");
+        var overrides = new Dictionary<string, string> { [pathKey] = "remote-project-id" };
+
+        var snapshot = _scanner.ScanDetailed(_root, overrides);
+
+        Assert.False(snapshot.MintedIds.ContainsKey(pathKey));
     }
 
     // ---- Transcripciones SOLO TEXTO (bug: invisibles para siempre en desktop) ----------------
@@ -204,16 +258,17 @@ public class LocalScannerTests : IDisposable
     // tombstone de sync en el momento del borrado (ver Workspace.DeleteAudio).
 
     [Fact]
-    public void ResolveTranscriptionId_SinOverride_CoincideConElIdDelScanReal()
+    public void ResolveTranscriptionId_SinOverride_DevuelveNull()
     {
+        // Task 1.3/ADR-06: sin HashId no hay forma de "adivinar" el id de un ítem que nunca se
+        // sincronizó -- inventar uno acá sintetizaría una identidad por inferencia (la misma
+        // doctrina que ya protege MergeWithLocalTombstones). null = "no se sabe qué borrar": el
+        // caller (SyncCoordinator.MarkAudioDeletedForSync) NO debe registrar tombstone.
         SeedWorkspace();
-
-        var snapshot = _scanner.ScanDetailed(_root);
-        var expected = snapshot.Transcriptions.Values.Single().Id;
 
         var resolved = LocalScanner.ResolveTranscriptionId("Trabajo", "reunion.mp3", new Dictionary<string, string>());
 
-        Assert.Equal(expected, resolved);
+        Assert.Null(resolved);
     }
 
     [Fact]
@@ -228,16 +283,13 @@ public class LocalScannerTests : IDisposable
     }
 
     [Fact]
-    public void ResolveTranscriptionId_ProyectoGeneral_CoincideConElIdDelScanReal()
+    public void ResolveTranscriptionId_ProyectoGeneral_SinOverride_DevuelveNull()
     {
         var ws = Workspace.OpenOrCreate(_root);
         File.WriteAllText(Path.Combine(ws.AudiosPath, "suelto.wav"), "audio-bytes");
 
-        var snapshot = _scanner.ScanDetailed(_root);
-        var expected = snapshot.Transcriptions.Values.Single().Id;
-
         var resolved = LocalScanner.ResolveTranscriptionId(null, "suelto.wav", new Dictionary<string, string>());
 
-        Assert.Equal(expected, resolved);
+        Assert.Null(resolved);
     }
 }

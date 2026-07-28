@@ -1,0 +1,69 @@
+{
+  "$comment": "Team sharing — slice 1a, Phase 11 (design.md ADR-13). Contrato compartido de un ítem de resultado de POST /api/sync/push (ADR-07c). Cada `case` describe los inputs puros de resolvePushOutcome (web) y el `result` de forma exacta que debe producir el wire format (PushResultItem en desktop, PushResult en web/api/sync/push/route.ts). Los dos lados (SyncDtosTests.cs y pushResponseContract.test.ts) corren su propia lógica sobre `input` y comparan contra `result` -- ningún lado hardcodea el otro, así que un drift real del contrato rompe el test en AMBOS repos.",
+  "cases": [
+    {
+      "name": "ok — fila existente, base_version al día",
+      "input": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "kind": "project",
+        "existingVersion": 7,
+        "baseVersion": 7,
+        "isNewRow": false
+      },
+      "result": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "kind": "project",
+        "status": "ok",
+        "version": 8
+      }
+    },
+    {
+      "name": "ok — fila nueva, sin base_version (nada que arbitrar)",
+      "input": {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "kind": "transcription",
+        "existingVersion": null,
+        "baseVersion": null,
+        "isNewRow": true
+      },
+      "result": {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "kind": "transcription",
+        "status": "ok",
+        "version": 1
+      }
+    },
+    {
+      "name": "conflict — base_version desactualizado, el servidor gana (ADR-07b)",
+      "input": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "kind": "transcription",
+        "existingVersion": 11,
+        "baseVersion": 9,
+        "isNewRow": false
+      },
+      "result": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "kind": "transcription",
+        "status": "conflict",
+        "version": 11
+      }
+    },
+    {
+      "name": "error — fila existente sin base_version (backstop de contrato, ADR-07g)",
+      "input": {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "kind": "project",
+        "existingVersion": 5,
+        "baseVersion": null,
+        "isNewRow": false
+      },
+      "result": {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "kind": "project",
+        "status": "error",
+        "code": "client_too_old"
+      }
+    }
+  ]
+}

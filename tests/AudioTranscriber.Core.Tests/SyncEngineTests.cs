@@ -74,11 +74,17 @@ public class SyncEngineTests : IDisposable
         File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "texto viejo");
 
         var scanner = new LocalScanner();
-        var initialScan = scanner.Scan(_root);
+        var initialSnapshot = scanner.ScanDetailed(_root);
+        var initialScan = initialSnapshot.Items;
         var projectId = initialScan.First(kv => kv.Value.Kind == SyncItemKind.Project).Key;
         var transcriptionId = initialScan.First(kv => kv.Value.Kind == SyncItemKind.Transcription).Key;
 
         var index = new SyncIndex(_dbPath);
+        // ADR-06: sin idMap, el próximo scan (el que RunAsync hace por su cuenta) acuñaría ids
+        // NUEVOS y aleatorios para "Trabajo" -- no calzarían con esta baseline. Se persisten los
+        // pares acuñados en ESTE scan (MintedIds) para simular "ya se sincronizó antes" -- el mismo
+        // registro que un ciclo real de RunAsync ya deja (Task 1.6).
+        index.SaveIdMap(initialSnapshot.MintedIds);
         index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
         {
             [projectId] = AsBaseline(initialScan[projectId]),
@@ -115,8 +121,111 @@ public class SyncEngineTests : IDisposable
         // La baseline quedó actualizada con ambos ids, reflejando el nuevo texto pusheado.
         var newBaseline = index.LoadBaseline();
         Assert.True(newBaseline.ContainsKey("remote-personal"));
-        var rescan = scanner.Scan(_root);
+        var rescan = scanner.ScanDetailed(_root, index.LoadIdMap()).Items;
         Assert.Equal(rescan[transcriptionId].ContentHash, newBaseline[transcriptionId].LastLocalHash);
+    }
+
+    // ---- Task 1.5/1.6 (ADR-06): un id acuñado sobrevive un push que falla ---------------------
+    // Un item local NUEVO (sin idOverride) se acuña con un UUIDv4 aleatorio en el primer scan del
+    // ciclo (Task 1.2). Ese id se persiste en SyncIdMap YA en este mismo ciclo (Task 1.6), incluso
+    // si el servidor rechaza el push -- son identidad, no estado de sync (ADR-06.3). Re-acuñar en
+    // el ciclo siguiente duplicaría el item en el próximo push exitoso (Riesgo #1 del design).
+
+    [Fact]
+    public async Task RunAsync_IdAcunadoEnPrimerScan_SobreviveUnPushQueFallaYSeReusaElMismoIdElCicloSiguiente()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "reunion.mp3"), "audio-bytes");
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Trabajo"));
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "hola");
+
+        // El servidor rechaza el push con un error genérico (no el patrón de borrado en cascada) --
+        // sin relación con la identidad, solo para confirmar que el rechazo no impide que el id
+        // acuñado se guarde igual (ver ReconcilePushResponse: revierte newBaseline, nunca newIdOverrides).
+        var pushErrorJson = """{"serverTime":"2026-07-28T00:00:00Z","ok":false,"errors":["error genérico del servidor"]}""";
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json(pushErrorJson));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var first = await engine.RunAsync("token-123");
+        Assert.Equal(SyncOutcome.Completed, first.Outcome);
+
+        var index = new SyncIndex(_dbPath);
+        var projectPathKey = LocalScanner.ProjectPathKey("Trabajo");
+        var idMapAfterFirstCycle = index.LoadIdMap();
+        Assert.True(
+            idMapAfterFirstCycle.ContainsKey(projectPathKey),
+            "el id acuñado del proyecto nuevo debe persistirse aunque el push haya sido rechazado");
+        var mintedProjectId = idMapAfterFirstCycle[projectPathKey];
+
+        // La baseline SÍ se revirtió (el push falló, ver ReconcilePushResponse) -- pero el id-map no.
+        Assert.False(index.LoadBaseline().ContainsKey(mintedProjectId));
+
+        var second = await engine.RunAsync("token-123");
+        Assert.Equal(SyncOutcome.Completed, second.Outcome);
+
+        var idMapAfterSecondCycle = index.LoadIdMap();
+        Assert.Equal(mintedProjectId, idMapAfterSecondCycle[projectPathKey]);
+
+        // El segundo ciclo reintenta el push del MISMO id -- nunca uno nuevo/duplicado.
+        Assert.Contains(second.Actions, a => a.Id == mintedProjectId && a.Kind == SyncItemKind.Project);
+    }
+
+    // ---- Task 2.6 (ADR-07c/g): el push manda base_version desde la baseline -------------------
+
+    [Fact]
+    public async Task RunAsync_PushUpsertDeItemYaConocido_MandaBaseVersionDeLaBaseline()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "reunion.mp3"), "audio-bytes");
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Trabajo"));
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "texto viejo");
+
+        var scanner = new LocalScanner();
+        var snapshot = scanner.ScanDetailed(_root);
+        var projectId = snapshot.Projects.Values.Single().Id;
+        var transcriptionId = snapshot.Transcriptions.Values.Single().Id;
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveIdMap(snapshot.MintedIds);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [projectId] = AsBaseline(snapshot.Items[projectId]) with { LastRemoteVersion = 9 },
+            [transcriptionId] = AsBaseline(snapshot.Items[transcriptionId]) with { LastRemoteVersion = 4 },
+        });
+
+        // Edición local -> dispara un PushUpsert de transcripción; el proyecto no cambió.
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "texto nuevo");
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        await engine.RunAsync("token-123");
+
+        var pushBody = handler.Bodies[handler.Requests.FindIndex(r => r.Method == HttpMethod.Post)];
+        Assert.Contains("\"base_version\":4", pushBody);
+    }
+
+    [Fact]
+    public async Task RunAsync_PushUpsertDeItemNuevo_NoMandaBaseVersion()
+    {
+        // Un ítem que NUNCA se sincronizó (sin entrada en baseline) no tiene base_version que
+        // comparar -- se omite del JSON (ADR-07g): un 0 falso haría que el servidor lo tratara como
+        // "el cliente creía tener la versión inicial", lo que no es cierto para un alta.
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "reunion.mp3"), "audio-bytes");
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Trabajo"));
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "texto nuevo local");
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        await engine.RunAsync("token-123");
+
+        var pushBody = handler.Bodies[handler.Requests.FindIndex(r => r.Method == HttpMethod.Post)];
+        Assert.DoesNotContain("base_version", pushBody);
     }
 
     // ---- Freno anti-borrado-masivo -----------------------------------------
@@ -130,11 +239,16 @@ public class SyncEngineTests : IDisposable
         File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "hola");
 
         var scanner = new LocalScanner();
-        var scan = scanner.Scan(_root);
+        var snapshot = scanner.ScanDetailed(_root);
+        var scan = snapshot.Items;
         var projectId = scan.First(kv => kv.Value.Kind == SyncItemKind.Project).Key;
         var transcriptionId = scan.First(kv => kv.Value.Kind == SyncItemKind.Transcription).Key;
 
         var index = new SyncIndex(_dbPath);
+        // ADR-06: persiste los ids acuñados en este scan -- si no, el scan interno de RunAsync
+        // acuña ids random NUEVOS para "Trabajo" que ya no calzan con projectId/transcriptionId
+        // (los que la baseline y el pull de abajo referencian explícitamente).
+        index.SaveIdMap(snapshot.MintedIds);
         index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
         {
             [projectId] = AsBaseline(scan[projectId]),
@@ -857,6 +971,10 @@ public class SyncEngineTests : IDisposable
             new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("upload failed") });
 
         var index = new SyncIndex(_dbPath);
+        // ADR-06: sin esto, el scan interno de RunAsync acuñaría ids random NUEVOS -- distintos de
+        // projectId/okId/failId precomputados arriba -- y las asserts de más abajo (que buscan esos
+        // ids EXACTOS en la baseline nueva) no calzarían con nada.
+        index.SaveIdMap(snapshot.MintedIds);
         var engine = BuildEngine(_root, _dbPath, apiHandler, uploadHandler);
 
         var result = await engine.RunAsync("token-123");
@@ -903,6 +1021,9 @@ public class SyncEngineTests : IDisposable
         var uploadHandler = new FakeHandler(req => Json("""{"ok":true}"""));
 
         var index = new SyncIndex(_dbPath);
+        // ADR-06: fija el id de "nueva.mp3" acuñado arriba para que el scan interno de RunAsync
+        // reutilice el MISMO id (si no, transcriptionId no calzaría con nada de la baseline nueva).
+        index.SaveIdMap(snapshot.MintedIds);
         var engine = BuildEngine(_root, _dbPath, apiHandler, uploadHandler);
 
         var result = await engine.RunAsync("token-123", autoUploadUntranscribed: false);
@@ -1098,11 +1219,17 @@ public class SyncEngineTests : IDisposable
         File.WriteAllText(ws.TranscriptPathFor("otra2.mp3"), "sin cambios 2");
 
         var scanner = new LocalScanner();
-        var initialScan = scanner.Scan(_root);
-        var transcriptionId = LocalScanner.ResolveTranscriptionId(null, "nota.mp3", new Dictionary<string, string>());
+        var initialSnapshot = scanner.ScanDetailed(_root);
+        var initialScan = initialSnapshot.Items;
+        // ADR-06: ResolveTranscriptionId ya no puede "adivinar" el id sin idMap (Task 1.3/1.4) --
+        // se toma el id que este scan realmente acuñó para "nota.mp3" (General, sin proyecto).
+        var transcriptionId = initialSnapshot.Transcriptions.Values.Single(t => t.AudioFileName == "nota.mp3").Id;
         var baselineEntries = initialScan.ToDictionary(kv => kv.Key, kv => AsBaseline(kv.Value));
 
         var index = new SyncIndex(_dbPath);
+        // Persiste los ids acuñados en este scan para que el scan interno de RunAsync los reutilice
+        // vía override en vez de acuñar otros random (si no, ni la baseline ni el tombstone calzan).
+        index.SaveIdMap(initialSnapshot.MintedIds);
         index.SaveBaseline(baselineEntries); // todos vivos, Deleted=false
         index.AddLocalTombstone(transcriptionId, SyncItemKind.Transcription);
 
@@ -1148,5 +1275,389 @@ public class SyncEngineTests : IDisposable
         Assert.Equal(SyncOutcome.Completed, result.Outcome);
         Assert.DoesNotContain(result.Actions, a => a.Id == "id-nunca-sincronizado");
         Assert.Empty(index.LoadLocalTombstones());
+    }
+
+    // ---- Phase 4 (ADR-06 §7, Riesgo #1 / ADR-07e): reconciliación incondicional --------------
+    // Hoy `newIdOverrides` solo se toca DENTRO de los `case SyncActionType.PullUpsert`
+    // (SyncEngine.cs, dentro del switch de ejecución de acciones) -- o sea, SOLO para ítems que
+    // generaron una acción este ciclo. En régimen, la mayoría de los ítems del pull NO generan
+    // acción (mismo hash que la baseline, "sin cambios") -- sin un backfill incondicional, esos
+    // ítems nunca registran su mapeo PathKey->id, y el próximo LocalScanner.ScanDetailed les
+    // acuña un id NUEVO -- duplicación masiva del workspace entero (Riesgo #1 del design).
+
+    [Fact]
+    public async Task RunAsync_ItemDelPullSinAccion_IgualRegistraSuPathKeyEnSyncIdMap()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "reunion.mp3"), "audio-bytes");
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Trabajo"));
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "hola");
+
+        var scanner = new LocalScanner();
+        var snapshot = scanner.ScanDetailed(_root);
+        var projectId = snapshot.Projects.Values.Single().Id;
+        var transcriptionId = snapshot.Transcriptions.Values.Single().Id;
+
+        var pullJson = $$"""
+            {"serverTime":"2026-07-28T00:00:00Z",
+             "projects":[{"id":"{{projectId}}","name":"Trabajo","updated_at":"2026-07-06T00:00:00Z"}],
+             "transcriptions":[{"id":"{{transcriptionId}}","project_id":"{{projectId}}","audio_name":"reunion.mp3","text":"hola","updated_at":"2026-07-06T00:00:00Z"}]}
+            """;
+        var parsedPull = System.Text.Json.JsonSerializer.Deserialize<PullResponse>(pullJson)!;
+        var remoteMapped = new RemoteMapper().Map(parsedPull);
+
+        var index = new SyncIndex(_dbPath);
+        // Baseline YA sincronizada (simula un ciclo previo) -- el idMap deliberadamente vacío: el
+        // mismo hueco que describe Riesgo #1 (p.ej. un upgrade desde antes de que existiera el
+        // acuñado persistente, o un SyncIdMap.db perdido/corrupto).
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [projectId] = AsBaseline(snapshot.Items[projectId], remoteHash: remoteMapped[projectId].ContentHash),
+            [transcriptionId] = AsBaseline(snapshot.Items[transcriptionId], remoteHash: remoteMapped[transcriptionId].ContentHash),
+        });
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(pullJson) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        Assert.Empty(result.Actions); // mismo contenido en base/local/remoto -- sin acción.
+
+        var idMap = index.LoadIdMap();
+        Assert.Equal(projectId, idMap[LocalScanner.ProjectPathKey("Trabajo")]);
+        Assert.Equal(transcriptionId, idMap[LocalScanner.TranscriptionPathKey("Trabajo", "reunion.mp3")]);
+    }
+
+    [Fact]
+    public async Task RunAsync_ItemDelPullSinAccion_ActualizaLastRemoteVersionEnLaBaseline()
+    {
+        // Test de RED explícito pedido por el design (ADR-07e): un ciclo sin acciones sobre un
+        // ítem cuyo version remoto avanzó igual deja LastRemoteVersion actualizado en la baseline
+        // -- si no, el próximo push legítimo de este ítem manda un base_version viejo y el
+        // servidor lo rechaza por "conflict" para siempre (sync trabado).
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+
+        var scanner = new LocalScanner();
+        var snapshot = scanner.ScanDetailed(_root);
+        var projectId = snapshot.Projects.Values.Single().Id;
+
+        var pullJson = $$"""
+            {"serverTime":"2026-07-28T00:00:00Z",
+             "projects":[{"id":"{{projectId}}","name":"Trabajo","updated_at":"2026-07-06T00:00:00Z","version":7}],
+             "transcriptions":[]}
+            """;
+        var parsedPull = System.Text.Json.JsonSerializer.Deserialize<PullResponse>(pullJson)!;
+        var remoteMapped = new RemoteMapper().Map(parsedPull);
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [projectId] = AsBaseline(snapshot.Items[projectId], remoteHash: remoteMapped[projectId].ContentHash)
+                with { LastRemoteVersion = 3 },
+        });
+        index.SaveIdMap(snapshot.MintedIds);
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(pullJson) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        Assert.Empty(result.Actions);
+
+        Assert.Equal(7, index.LoadBaseline()[projectId].LastRemoteVersion);
+    }
+
+    [Fact]
+    public async Task RunAsync_PathKeyReidentificadoConOtroId_DisparaRekeyBaselineSinDejarHuerfana()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        ws.CreateProject("Trabajo");
+
+        var scanner = new LocalScanner();
+        var localState = scanner.Scan(_root).Values.Single();
+
+        const string oldId = "old-11111111-1111-1111-1111-111111111111";
+        const string newId = "new-22222222-2222-2222-2222-222222222222";
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveIdMap(new Dictionary<string, string> { [LocalScanner.ProjectPathKey("Trabajo")] = oldId });
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [oldId] = new SyncBaselineItem(oldId, SyncItemKind.Project, localState.ContentHash, localState.ContentHash, localState.UpdatedAt),
+        });
+
+        // El pull re-identifica la MISMA carpeta ("Trabajo") con un id CANÓNICO distinto -- el
+        // caso de migración de ADR-06 §7.
+        var pullJson = $$"""
+            {"serverTime":"2026-07-28T00:00:00Z",
+             "projects":[{"id":"{{newId}}","name":"Trabajo","updated_at":"2026-07-06T00:00:00Z","version":1}],
+             "transcriptions":[]}
+            """;
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(pullJson) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+
+        var newBaseline = index.LoadBaseline();
+        Assert.False(newBaseline.ContainsKey(oldId), "la entrada vieja de baseline debe migrarse (rekey), no quedar huérfana");
+
+        var idMap = index.LoadIdMap();
+        Assert.Equal(newId, idMap[LocalScanner.ProjectPathKey("Trabajo")]);
+    }
+
+    [Fact]
+    public async Task RunAsync_ItemDelPullSinAccionConNombreQueRequiereSaneado_ElPathKeyDeLaReconciliacionCoincideConElDelScanLocal()
+    {
+        // El servidor manda "name" tal cual lo tipeó el usuario (puede tener caracteres inválidos
+        // para Windows); el PathKey local SIEMPRE se deriva del nombre de CARPETA, que es el
+        // nombre YA saneado (Workspace.Sanitize). Si la reconciliación saneara distinto de como
+        // sanea LocalScanner/Workspace.CreateProject, el PathKey no matchea y el próximo scan
+        // acuña un id nuevo para la MISMA carpeta -- mismo criterio que protege el caso huérfano-
+        // por-stem (LocalScanner.cs:806-807), que no puede regresionar.
+        const string rawName = "Reunión: Año 2026"; // ':' es inválido en Windows.
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject(rawName); // ya crea la carpeta CON el nombre saneado.
+
+        var scanner = new LocalScanner();
+        var localState = scanner.Scan(_root).Values.Single();
+
+        var pullJson = $$"""
+            {"serverTime":"2026-07-28T00:00:00Z",
+             "projects":[{"id":"remote-reunion","name":"{{rawName}}","updated_at":"2026-07-06T00:00:00Z","version":1}],
+             "transcriptions":[]}
+            """;
+        var parsedPull = System.Text.Json.JsonSerializer.Deserialize<PullResponse>(pullJson)!;
+        var remoteHash = new RemoteMapper().Map(parsedPull)["remote-reunion"].ContentHash;
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            ["remote-reunion"] = new SyncBaselineItem(
+                "remote-reunion", SyncItemKind.Project, localState.ContentHash, remoteHash, localState.UpdatedAt),
+        });
+        // idMap deliberadamente vacío -- mismo hueco de Riesgo #1.
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(pullJson) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        Assert.Empty(result.Actions);
+
+        var expectedPathKey = LocalScanner.ProjectPathKey(project.Name); // project.Name = carpeta ya saneada.
+        var idMap = index.LoadIdMap();
+        Assert.Equal("remote-reunion", idMap[expectedPathKey]);
+    }
+
+    // ---- Task 4.5: pull completo único (since=null forzado) tras el upgrade -------------------
+
+    [Fact]
+    public async Task RunAsync_PrimerCicloSinFullPullDone_FuerzaSinceNullAunqueElCallerPaseUnoExplicito()
+    {
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var explicitSince = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var result = await engine.RunAsync("token-123", since: explicitSince);
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+        var pullRequest = handler.Requests.Single(r => r.Method == HttpMethod.Get);
+        Assert.DoesNotContain("since=", pullRequest.RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_TrasCompletarElPrimerCiclo_LosSiguientesRespetanElSinceExplicito()
+    {
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(EmptyPull) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        await engine.RunAsync("token-123"); // primer ciclo: marca SyncMeta.FullPullDone.
+
+        var explicitSince = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        await engine.RunAsync("token-123", since: explicitSince);
+
+        var secondPullRequest = handler.Requests.Where(r => r.Method == HttpMethod.Get).Skip(1).Single();
+        Assert.Contains("since=", secondPullRequest.RequestUri!.ToString());
+    }
+
+    // ---- Gap explícito dejado por Phase 1-3: RunAsync_PullUpsertDeProyectoYaLocalConColor_
+    // PreservaElColorEnDisco (más arriba) pasaba SOLO porque ExecutePullProjectUpsert resuelve por
+    // NOMBRE de carpeta, no por id -- ese test nunca guarda idMap antes del ciclo, así que el scan
+    // INTERNO de RunAsync (idOverrides vacío en ese momento) mintea un id NUEVO para "grabado" y lo
+    // pushea como proyecto nuevo -- un duplicado FANTASMA en el servidor -- mientras el PullUpsert
+    // del id canónico de la baseline resuelve por nombre sobre la MISMA carpeta física, dejando el
+    // test viejo en verde sin que nadie note el duplicado (no inspecciona los requests de push).
+    // La reconciliación incondicional de Phase 4 corre ANTES del scan local, así que el scan nunca
+    // llega a acuñar ese id fantasma.
+
+    [Fact]
+    public async Task RunAsync_PullUpsertDeProyectoYaLocalSinIdMapPrevio_NoGeneraUnPushUpsertFantasmaDelIdRecienAcunado()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("grabado");
+        project.Color = "indigo";
+        ws.SaveProjectMeta(project);
+
+        var scanner = new LocalScanner();
+        var initialScan = scanner.Scan(_root);
+        var projectId = initialScan.First(kv => kv.Value.Kind == SyncItemKind.Project).Key;
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [projectId] = AsBaseline(initialScan[projectId]),
+        });
+        // Deliberadamente SIN SaveIdMap -- el mismo hueco del test original.
+
+        var pullJson = $$"""
+            {"serverTime":"2026-07-06T01:00:00Z",
+             "projects":[{"id":"{{projectId}}","name":"grabado","description":"editado desde la web","updated_at":"2026-07-06T01:00:00Z","version":2}],
+             "transcriptions":[]}
+            """;
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(pullJson) : Json("""{"ok":true}"""));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+
+        // El único cambio real es un PullUpsert legítimo del id canónico -- ningún id fantasma
+        // recién acuñado debería generar un PushUpsert de proyecto, ni un POST al backend.
+        Assert.DoesNotContain(handler.Requests, r => r.Method == HttpMethod.Post);
+        Assert.DoesNotContain(result.Actions, a => a.Kind == SyncItemKind.Project && a.Type == SyncActionType.PushUpsert);
+        Assert.Contains(result.Actions, a => a.Id == projectId && a.Type == SyncActionType.PullUpsert);
+
+        // Una sola carpeta física en disco, sin duplicados.
+        Assert.Single(ws.ListProjects(), p => !p.IsGeneral);
+    }
+
+    // ---- Task 5.4 (ADR-07d): wiring del ConflictResolver en ReconcilePushResponse -------------
+
+    [Fact]
+    public async Task RunAsync_PushRechazadoPorConflictDeVersion_PreservaLocalComoHermanoYAdoptaLaCopiaRemota()
+    {
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "reunion.mp3"), "audio-bytes");
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Trabajo"));
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "texto viejo sincronizado");
+
+        var scanner = new LocalScanner();
+        var snapshot = scanner.ScanDetailed(_root);
+        var projectId = snapshot.Projects.Values.Single().Id;
+        var transcriptionId = snapshot.Transcriptions.Values.Single().Id;
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveIdMap(snapshot.MintedIds);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [projectId] = AsBaseline(snapshot.Items[projectId]),
+            [transcriptionId] = AsBaseline(snapshot.Items[transcriptionId]) with { LastRemoteVersion = 4 },
+        });
+
+        // El usuario edita localmente -> dispara un PushUpsert de transcripción con base_version=4.
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "edición local del usuario");
+
+        // El pull de ESTE MISMO ciclo ya trae la copia remota ganadora (alguien más la editó
+        // primero, version subió a 9).
+        var pullJson = $$"""
+            {"serverTime":"2026-07-28T00:00:00Z",
+             "projects":[],
+             "transcriptions":[{"id":"{{transcriptionId}}","project_id":"{{projectId}}","audio_name":"reunion.mp3","text":"edición ganadora del servidor","updated_at":"2026-07-28T00:00:00Z","version":9}]}
+            """;
+
+        // El push responde "conflict" para esta transcripción (base_version=4 quedó vieja).
+        var pushResponseJson = $$"""
+            {"serverTime":"2026-07-28T00:00:00Z","ok":true,"errors":[],
+             "results":[{"id":"{{transcriptionId}}","kind":"transcription","status":"conflict","version":9}]}
+            """;
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(pullJson) : Json(pushResponseJson));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+
+        // El push se mandó con el base_version PRE-ciclo (4) -- no el que este mismo pull acaba de
+        // revelar (9) -- si no, el servidor nunca vería la staleness real.
+        var pushBody = handler.Bodies[handler.Requests.FindIndex(r => r.Method == HttpMethod.Post)];
+        Assert.Contains("\"base_version\":4", pushBody);
+
+        // La ruta canónica queda con la copia REMOTA (el servidor ganó).
+        Assert.Equal("edición ganadora del servidor", File.ReadAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo")));
+
+        // La edición LOCAL no se perdió: quedó preservada en el hermano .conflicto-*.
+        var siblingFiles = Directory.GetFiles(Path.Combine(ws.TranscriptsPath, "Trabajo"), "reunion.conflicto-*.txt");
+        var sibling = Assert.Single(siblingFiles);
+        Assert.Equal("edición local del usuario", File.ReadAllText(sibling));
+
+        // La baseline adoptó la version del servidor -- el próximo push manda base_version=9, no 4.
+        var newBaseline = index.LoadBaseline();
+        Assert.Equal(9, newBaseline[transcriptionId].LastRemoteVersion);
+    }
+
+    // ---- Phase 7 (gap documentado en Phase 5.4/ADR-07e): wiring de status=="ok" en results[] --
+
+    [Fact]
+    public async Task RunAsync_PushExitoso_ActualizaLastRemoteVersionConLaVersionDevueltaPorElServidor()
+    {
+        // Gap explícito dejado por Phase 5: ResolveConflicts solo procesaba status=="conflict".
+        // Un push exitoso (status:"ok") deja LastRemoteVersion en la baseline SIN refrescar
+        // (BuildBaselineEntry preserva el valor viejo a propósito para un push, ver el comentario
+        // largo en RunAsync) -- si nada más lo refresca, el PRÓXIMO push de este mismo ítem manda
+        // un base_version viejo, y el servidor lo rechaza como "conflict" contra su propia
+        // escritura recién aceptada -- el "sync trabado" que describe ADR-07e, ahora disparado por
+        // el propio cliente en vez de por un pull incremental.
+        var ws = Workspace.OpenOrCreate(_root);
+        var project = ws.CreateProject("Trabajo");
+        File.WriteAllText(Path.Combine(project.FolderPath, "reunion.mp3"), "audio-bytes");
+        Directory.CreateDirectory(Path.Combine(ws.TranscriptsPath, "Trabajo"));
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "texto viejo sincronizado");
+
+        var scanner = new LocalScanner();
+        var snapshot = scanner.ScanDetailed(_root);
+        var projectId = snapshot.Projects.Values.Single().Id;
+        var transcriptionId = snapshot.Transcriptions.Values.Single().Id;
+
+        var index = new SyncIndex(_dbPath);
+        index.SaveIdMap(snapshot.MintedIds);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            [projectId] = AsBaseline(snapshot.Items[projectId]),
+            [transcriptionId] = AsBaseline(snapshot.Items[transcriptionId]) with { LastRemoteVersion = 4 },
+        });
+
+        // El usuario edita localmente -> dispara un PushUpsert de transcripción con base_version=4.
+        File.WriteAllText(ws.TranscriptPathFor("reunion.mp3", "Trabajo"), "edición local del usuario");
+
+        var pullJson = $$"""
+            {"serverTime":"2026-07-28T00:00:00Z","projects":[],"transcriptions":[]}
+            """;
+
+        // El push acepta el cambio: el trigger del server subió version de 4 a 5.
+        var pushResponseJson = $$"""
+            {"serverTime":"2026-07-28T00:00:00Z","ok":true,"errors":[],
+             "results":[{"id":"{{transcriptionId}}","kind":"transcription","status":"ok","version":5}]}
+            """;
+
+        var handler = new FakeHandler(req => req.Method == HttpMethod.Get ? Json(pullJson) : Json(pushResponseJson));
+        var engine = BuildEngine(_root, _dbPath, handler);
+
+        var result = await engine.RunAsync("token-123");
+
+        Assert.Equal(SyncOutcome.Completed, result.Outcome);
+
+        // La baseline adoptó la version que el server efectivamente devolvió -- el próximo push
+        // manda base_version=5, no el 4 que quedó anclado desde ANTES de este mismo push.
+        var newBaseline = index.LoadBaseline();
+        Assert.Equal(5, newBaseline[transcriptionId].LastRemoteVersion);
     }
 }

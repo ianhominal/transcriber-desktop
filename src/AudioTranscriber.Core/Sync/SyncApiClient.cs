@@ -25,6 +25,7 @@ public sealed class SyncApiClient
 
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        req.Headers.TryAddWithoutValidation("x-client-version", SyncConfig.ClientVersion);
 
         using var resp = await _http.SendAsync(req, ct);
         var json = await resp.Content.ReadAsStringAsync(ct);
@@ -44,6 +45,7 @@ public sealed class SyncApiClient
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/sync/push");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        req.Headers.TryAddWithoutValidation("x-client-version", SyncConfig.ClientVersion);
         req.Content = JsonContent.Create(payload);
 
         using var resp = await _http.SendAsync(req, ct);

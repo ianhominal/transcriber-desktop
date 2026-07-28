@@ -56,11 +56,17 @@ public sealed class SyncPlanner
             }
             else
             {
-                // Conflicto: gana el más nuevo (last-write-wins).
-                if (l!.UpdatedAt >= r!.UpdatedAt)
-                    actions.Add(ToAction(l, push: true, "conflicto: gana local (más nuevo)"));
-                else
-                    actions.Add(ToAction(r, push: false, "conflicto: gana remoto (más nuevo)"));
+                // Conflicto (cambio local Y remoto): arbitra el SERVIDOR, nunca el reloj del
+                // cliente (ADR-07b, I-5 -- bugfix Phase 5). Antes acá se comparaba
+                // l.UpdatedAt >= r.UpdatedAt ("gana el más nuevo"): dos relojes distintos --
+                // mtime del filesystem del usuario contra updated_at de Postgres -- decidiendo una
+                // escritura. Ahora el planner queda determinístico y CLOCK-INDEPENDENT: SIEMPRE
+                // push, con el base_version que el cliente conoce (ver
+                // SyncEngine.ResolveBaseVersion). Si el cliente estaba desactualizado, el servidor
+                // rechaza con status "conflict" y el ConflictResolver (Phase 5,
+                // Core/Sync/ConflictResolver.cs) resuelve preservando ambas copias -- nunca se
+                // pisa en silencio una edición local ni una remota.
+                actions.Add(ToAction(l!, push: true, "conflicto: arbitra el servidor"));
             }
         }
 

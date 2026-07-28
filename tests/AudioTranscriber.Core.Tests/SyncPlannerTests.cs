@@ -121,9 +121,30 @@ public class SyncPlannerTests
         Assert.Equal(SyncActionType.PullUpsert, a!.Type);
     }
 
-    // Conflictos (last-write-wins) -------------------------------------------
+    // Conflictos (ADR-07b/I-5: arbitra el SERVIDOR, nunca el reloj del cliente) --------------
+    // Bugfix Phase 5 (ADR-07b): antes, un conflicto (cambio local Y remoto) se resolvía por
+    // "gana el más nuevo" comparando UpdatedAt -- dos relojes distintos (el mtime del filesystem
+    // del usuario contra el updated_at de Postgres) decidiendo una escritura, exactamente lo que
+    // prohíbe I-5. Ahora el planner es determinístico y CLOCK-INDEPENDENT: ante conflicto,
+    // SIEMPRE push -- el servidor arbitra con base_version (ver SyncEngine.ResolveBaseVersion) y,
+    // si el cliente estaba desactualizado, responde "conflict"; ahí el ConflictResolver (Phase 5,
+    // ver ConflictResolverTests.cs) preserva ambas copias, sin perder nada.
+
     [Fact]
-    public void ConflictoEdicion_GanaLocalMasNuevo()
+    public void ConflictoEdicion_SiempreEmpujaLocal_AunqueElRemotoSeaMasNuevo()
+    {
+        // Antes de Phase 5 esto ganaba el REMOTO (300 > 200) y generaba un PullUpsert -- ahora el
+        // planner ya no mira el reloj: SIEMPRE push, el servidor decide si acepta o rechaza con
+        // base_version.
+        var b = BaseSnap(BaselineItem("1", "v1", 100));
+        var l = Snap(Item("1", "vLocal", 200));
+        var r = Snap(Item("1", "vRemote", 300));
+        var a = PlanOne(b, l, r);
+        Assert.Equal(SyncActionType.PushUpsert, a!.Type);
+    }
+
+    [Fact]
+    public void ConflictoEdicion_SiempreEmpujaLocal_ConElLocalYaMasNuevoTambien()
     {
         var b = BaseSnap(BaselineItem("1", "v1", 100));
         var l = Snap(Item("1", "vLocal", 300));
@@ -133,33 +154,46 @@ public class SyncPlannerTests
     }
 
     [Fact]
-    public void ConflictoEdicion_GanaRemotoMasNuevo()
+    public void BorradoLocal_VsEdicionRemota_SiempreEmpujaElBorrado_SinImportarCualEsMasNueva()
     {
-        var b = BaseSnap(BaselineItem("1", "v1", 100));
-        var l = Snap(Item("1", "vLocal", 200));
-        var r = Snap(Item("1", "vRemote", 300));
-        var a = PlanOne(b, l, r);
-        Assert.Equal(SyncActionType.PullUpsert, a!.Type);
+        // Antes: la edición remota "revivía" el item si era más nueva que el borrado local. Ahora
+        // el borrado local SIEMPRE se pushea (push=true, winner=local, Deleted=true -> PushDelete)
+        // -- el servidor es quien decide si acepta el borrado o lo rechaza por conflicto de
+        // version (y ahí el ConflictResolver preserva la copia remota, no se pierde nada).
+        var bRemotoMasNuevo = BaseSnap(BaselineItem("1", "v1", 100));
+        var lRemotoMasNuevo = Snap(Item("1", "v1", 150, deleted: true));
+        var rRemotoMasNuevo = Snap(Item("1", "vRemote", 300));
+        var aRemotoMasNuevo = PlanOne(bRemotoMasNuevo, lRemotoMasNuevo, rRemotoMasNuevo);
+        Assert.Equal(SyncActionType.PushDelete, aRemotoMasNuevo!.Type);
+
+        var bLocalMasNuevo = BaseSnap(BaselineItem("1", "v1", 100));
+        var lLocalMasNuevo = Snap(Item("1", "v1", 300, deleted: true));
+        var rLocalMasNuevo = Snap(Item("1", "vRemote", 200));
+        var aLocalMasNuevo = PlanOne(bLocalMasNuevo, lLocalMasNuevo, rLocalMasNuevo);
+        Assert.Equal(SyncActionType.PushDelete, aLocalMasNuevo!.Type);
     }
 
-    [Fact]
-    public void BorradoLocal_VsEdicionRemotaMasNueva_Revive()
-    {
-        // El borrado local es viejo; la edición remota es más nueva → gana la edición.
-        var b = BaseSnap(BaselineItem("1", "v1", 100));
-        var l = Snap(Item("1", "v1", 150, deleted: true));
-        var r = Snap(Item("1", "vRemote", 300));
-        var a = PlanOne(b, l, r);
-        Assert.Equal(SyncActionType.PullUpsert, a!.Type);
-    }
+    // ---- Task 5.1 (ADR-07b): arbitraje clock-independiente, explícito -----------------------
 
     [Fact]
-    public void BorradoLocal_VsEdicionRemotaMasVieja_Borra()
+    public void Conflicto_RelojLocalDesincronizado_ProduceElMismoResultadoQueRelojCorrecto()
     {
-        var b = BaseSnap(BaselineItem("1", "v1", 100));
-        var l = Snap(Item("1", "v1", 300, deleted: true));
-        var r = Snap(Item("1", "vRemote", 200));
-        var a = PlanOne(b, l, r);
-        Assert.Equal(SyncActionType.PushDelete, a!.Type);
+        // Mismo escenario de conflicto (cambio local Y remoto) corrido dos veces: una con un
+        // reloj local "correcto" (más viejo que el remoto, como pasaría de verdad si el usuario
+        // editó antes de que llegara el cambio del server) y otra con el reloj local gravemente
+        // desincronizado (época Unix, 1970) -- el resultado tiene que ser IDÉNTICO en los dos
+        // casos, porque el planner ya no mira ninguno de los dos relojes (I-5).
+        var bRelojCorrecto = BaseSnap(BaselineItem("1", "v1", 100));
+        var lRelojCorrecto = Snap(Item("1", "vLocal", 150));
+        var rRelojCorrecto = Snap(Item("1", "vRemote", 200));
+        var accionRelojCorrecto = PlanOne(bRelojCorrecto, lRelojCorrecto, rRelojCorrecto);
+
+        var bRelojRoto = BaseSnap(BaselineItem("1", "v1", 100));
+        var lRelojRoto = Snap(Item("1", "vLocal", 0)); // reloj local roto: 1970-01-01
+        var rRelojRoto = Snap(Item("1", "vRemote", 200));
+        var accionRelojRoto = PlanOne(bRelojRoto, lRelojRoto, rRelojRoto);
+
+        Assert.Equal(SyncActionType.PushUpsert, accionRelojCorrecto!.Type);
+        Assert.Equal(accionRelojCorrecto.Type, accionRelojRoto!.Type);
     }
 }

@@ -35,6 +35,15 @@ public sealed class LocalSnapshot
     public required IReadOnlyDictionary<string, SyncItemState> Items { get; init; }
     public required IReadOnlyDictionary<string, LocalProjectEntry> Projects { get; init; }
     public required IReadOnlyDictionary<string, LocalTranscriptionEntry> Transcriptions { get; init; }
+
+    /// <summary>
+    /// Pares path-key -&gt; id de los items que este scan tuvo que ACUÑAR de cero (sin entrada en
+    /// <c>idOverrides</c>, ver <see cref="LocalScanner.ScanDetailed"/>). <see cref="SyncEngine"/> los
+    /// mergea en su propio mapa de overrides INMEDIATAMENTE después del primer scan del ciclo (ADR-06.2/3
+    /// del design) para que el id acuñado sobreviva al rescan y se persista aunque el push falle --
+    /// re-acuñar en el ciclo siguiente duplicaría el item en el servidor.
+    /// </summary>
+    public required IReadOnlyDictionary<string, string> MintedIds { get; init; }
 }
 
 /// <summary>
@@ -52,16 +61,24 @@ public sealed class LocalScanner
     /// <summary>
     /// Releva la carpeta con detalle completo. <paramref name="idOverrides"/> (path-key -&gt; id)
     /// permite resolver el id real de items que se originaron en un pull remoto en vez de
-    /// generarles un id local nuevo (ver <see cref="SyncIndex.LoadIdMap"/>).
+    /// generarles un id local nuevo (ver <see cref="SyncIndex.LoadIdMap"/>). <paramref name="mintId"/>
+    /// acuña el id de un item SIN override (default: UUIDv4 aleatorio, ver ADR-06) -- inyectable para
+    /// tests que necesitan un id predecible. Los pares acuñados en ESTE scan quedan en
+    /// <see cref="LocalSnapshot.MintedIds"/>.
     /// </summary>
-    public LocalSnapshot ScanDetailed(string rootPath, IReadOnlyDictionary<string, string>? idOverrides = null)
+    public LocalSnapshot ScanDetailed(
+        string rootPath,
+        IReadOnlyDictionary<string, string>? idOverrides = null,
+        Func<string, string>? mintId = null)
     {
         idOverrides ??= new Dictionary<string, string>();
+        mintId ??= _ => Guid.NewGuid().ToString();
         var ws = Workspace.OpenOrCreate(rootPath);
 
         var items = new Dictionary<string, SyncItemState>();
         var projects = new Dictionary<string, LocalProjectEntry>();
         var transcriptions = new Dictionary<string, LocalTranscriptionEntry>();
+        var mintedIds = new Dictionary<string, string>();
 
         foreach (var project in ws.ListProjects())
         {
@@ -69,7 +86,15 @@ public sealed class LocalScanner
             if (!project.IsGeneral)
             {
                 var pathKey = ProjectPathKey(project.Name);
-                projectId = idOverrides.TryGetValue(pathKey, out var overriddenId) ? overriddenId : HashId(pathKey);
+                if (idOverrides.TryGetValue(pathKey, out var overriddenId))
+                {
+                    projectId = overriddenId;
+                }
+                else
+                {
+                    projectId = mintId(pathKey);
+                    mintedIds[pathKey] = projectId;
+                }
 
                 var hash = ContentHasher.Hash(project.Title, project.Description);
                 var updatedAt = new DateTimeOffset(Directory.GetLastWriteTimeUtc(project.FolderPath), TimeSpan.Zero);
@@ -99,7 +124,16 @@ public sealed class LocalScanner
                 if (!audio.HasAudio && !hasOverride)
                     continue;
 
-                var trId = hasOverride ? overriddenTrId! : HashId(trPathKey);
+                string trId;
+                if (hasOverride)
+                {
+                    trId = overriddenTrId!;
+                }
+                else
+                {
+                    trId = mintId(trPathKey);
+                    mintedIds[trPathKey] = trId;
+                }
 
                 var hasTranscript = audio.HasTranscript;
                 var text = hasTranscript ? File.ReadAllText(audio.TranscriptPath) : string.Empty;
@@ -123,7 +157,7 @@ public sealed class LocalScanner
             }
         }
 
-        return new LocalSnapshot { Items = items, Projects = projects, Transcriptions = transcriptions };
+        return new LocalSnapshot { Items = items, Projects = projects, Transcriptions = transcriptions, MintedIds = mintedIds };
     }
 
     /// <summary>Clave estable de un proyecto, previa al hash (útil para el mapa de identidad).</summary>
@@ -134,36 +168,20 @@ public sealed class LocalScanner
         $"transcription:{projectName}/{audioFileName}";
 
     /// <summary>
-    /// Resuelve el mismo id que <see cref="ScanDetailed"/> le asignaría a la transcripción
-    /// (proyecto, archivo de audio) sin tener que correr un scan completo del disco. Pensado para
+    /// Resuelve el id de sync de una transcripción (proyecto, archivo de audio) SOLO si ya es
+    /// conocido -- sin tener que correr un scan completo del disco. Pensado para
     /// <see cref="SyncCoordinator.MarkAudioDeletedForSync"/> (bug #1, borrado local no propagado a
     /// la nube): en el momento del borrado hace falta resolver el id de sync de ESE audio puntual
-    /// para registrar su tombstone, replicando EXACTO el criterio de <paramref name="idMap"/> +
-    /// <see cref="HashId"/> que usa el scan real -- cualquier diferencia acá generaría un id
-    /// distinto y el tombstone nunca calzaría con la baseline.
+    /// para registrar su tombstone. ADR-06: ya no hay <c>HashId</c> con el que "adivinar" un id para
+    /// un ítem sin entrada en <paramref name="idMap"/> -- inventar uno acá sintetizaría una
+    /// identidad nueva por inferencia (la misma doctrina que ya protege
+    /// <see cref="SyncEngine"/>.MergeWithLocalTombstones) y ese id nunca calzaría con el que
+    /// <see cref="ScanDetailed"/> vaya a acuñar. <c>null</c> = "no se sabe qué borrar": el caller NO
+    /// debe registrar tombstone.
     /// </summary>
-    public static string ResolveTranscriptionId(string? projectName, string audioFileName, IReadOnlyDictionary<string, string> idMap)
+    public static string? ResolveTranscriptionId(string? projectName, string audioFileName, IReadOnlyDictionary<string, string> idMap)
     {
         var key = TranscriptionPathKey(projectName, audioFileName);
-        return idMap.TryGetValue(key, out var mapped) ? mapped : HashId(key);
-    }
-
-    /// <summary>
-    /// Id determinístico (mismo pathKey -&gt; mismo id, siempre, sin persistir nada) con formato
-    /// UUID válido. Antes se usaba directo el hex de 64 caracteres de <see cref="ContentHasher"/>,
-    /// que NO es un UUID: la columna "projects.id"/"transcriptions.id" del backend es `uuid` en
-    /// Postgres, así que un push con ese id crudo fallaba el upsert (causa raíz del 500 al subir
-    /// un proyecto/transcripción nuevo creado localmente). Se toman los primeros 16 bytes del
-    /// hash SHA-256 del pathKey y se formatean como UUID (versión/variante seteadas para que sea
-    /// un v4 sintácticamente válido); sigue siendo puro y determinístico, no hace falta tocar el
-    /// id-map de <see cref="SyncIndex"/> para que sea estable entre ciclos.
-    /// </summary>
-    private static string HashId(string pathKey)
-    {
-        var hashHex = ContentHasher.Hash(pathKey);
-        var bytes = Convert.FromHexString(hashHex[..32]);
-        bytes[6] = (byte)((bytes[6] & 0x0F) | 0x40); // version 4
-        bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80); // variant RFC 4122
-        return new Guid(bytes).ToString();
+        return idMap.TryGetValue(key, out var mapped) ? mapped : null;
     }
 }

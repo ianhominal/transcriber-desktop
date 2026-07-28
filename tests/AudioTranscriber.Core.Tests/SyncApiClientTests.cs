@@ -231,4 +231,36 @@ public class SyncApiClientTests
         Assert.Equal(403, ex.StatusCode);
         Assert.Contains("Forbidden", ex.Message);
     }
+
+    // ---- Task 6.1 (ADR-07g): gate de versión mínima de cliente -------------------------------
+    // El backend (web/src/lib/sync/pushConflict.ts, MIN_SYNC_CLIENT_VERSION="2.0.0") valida el
+    // header "x-client-version" para rechazar un desktop desactualizado que pushee sin
+    // base_version -- ver isClientVersionAllowed (deny-by-default: header ausente = rechazo).
+    // Pull/Push tienen que mandarlo SIEMPRE, no solo cuando hay upserts sobre filas existentes:
+    // el cliente no sabe de antemano si el server lo va a exigir para este batch en particular.
+
+    [Fact]
+    public async Task Pull_MandaHeaderXClientVersion()
+    {
+        var handler = new FakeHandler(_ =>
+            Json("""{"serverTime":"2026-07-06T00:00:00Z","projects":[],"transcriptions":[]}"""));
+        var client = new SyncApiClient(new HttpClient(handler), "https://app.vercel.app");
+
+        await client.PullAsync("AT");
+
+        Assert.True(handler.LastRequest!.Headers.TryGetValues("x-client-version", out var values));
+        Assert.Equal(SyncConfig.ClientVersion, values!.Single());
+    }
+
+    [Fact]
+    public async Task Push_MandaHeaderXClientVersion()
+    {
+        var handler = new FakeHandler(_ => Json("""{"ok":true,"errors":[]}"""));
+        var client = new SyncApiClient(new HttpClient(handler), "https://app.vercel.app");
+
+        await client.PushAsync("AT", new PushRequest());
+
+        Assert.True(handler.LastRequest!.Headers.TryGetValues("x-client-version", out var values));
+        Assert.Equal(SyncConfig.ClientVersion, values!.Single());
+    }
 }
