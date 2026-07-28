@@ -206,12 +206,39 @@ public sealed class SyncIndex
         using var conn = Open();
         using var tx = conn.BeginTransaction();
 
-        using var cmd = conn.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = "UPDATE SyncBaseline SET Id = $newId WHERE Id = $oldId";
-        cmd.Parameters.AddWithValue("$newId", newId);
-        cmd.Parameters.AddWithValue("$oldId", oldId);
-        cmd.ExecuteNonQuery();
+        // Bug de producción (2026-07-28, "SQLite Error 19: UNIQUE constraint failed:
+        // SyncBaseline.Id"): un UPDATE pelado del PK asume que el id nuevo está libre, y en un
+        // workspace real NO lo está -- conviven la entrada del HashId viejo (anterior a la
+        // migración de identidad) y la del id canónico que el pull ya había traído. La violación
+        // de PK abortaba el ciclo ENTERO de sync, y el ciclo siguiente arrancaba con la baseline a
+        // medio migrar: push con base_version viejo, rechazo por conflicto, y una copia
+        // ".conflicto-<fecha>" por cada ítem afectado.
+        //
+        // Si el destino ya existe se descarta la fila VIEJA y se conserva la canónica: es la que
+        // matchea con el servidor. Si los hashes difieren, el próximo ciclo lo detecta como cambio
+        // y pushea de más -- un push redundante es un costo aceptable; perder contenido no lo es.
+        using (var dedupe = conn.CreateCommand())
+        {
+            dedupe.Transaction = tx;
+            dedupe.CommandText =
+                "DELETE FROM SyncBaseline WHERE Id = $oldId " +
+                "AND EXISTS (SELECT 1 FROM SyncBaseline WHERE Id = $newId)";
+            dedupe.Parameters.AddWithValue("$newId", newId);
+            dedupe.Parameters.AddWithValue("$oldId", oldId);
+            dedupe.ExecuteNonQuery();
+        }
+
+        // Si el DELETE de arriba no encontró un destino ocupado, la fila vieja sigue viva y este
+        // UPDATE la renombra como siempre. Si sí lo encontró, no queda nada que renombrar y este
+        // UPDATE afecta cero filas.
+        using (var rename = conn.CreateCommand())
+        {
+            rename.Transaction = tx;
+            rename.CommandText = "UPDATE SyncBaseline SET Id = $newId WHERE Id = $oldId";
+            rename.Parameters.AddWithValue("$newId", newId);
+            rename.Parameters.AddWithValue("$oldId", oldId);
+            rename.ExecuteNonQuery();
+        }
 
         tx.Commit();
     }

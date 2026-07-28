@@ -267,6 +267,35 @@ public class SyncIndexTests : IDisposable
         Assert.Empty(index.LoadBaseline());
     }
 
+    [Fact]
+    public void RekeyBaseline_CuandoElIdNuevoYaExiste_NoTiraUniqueYConservaLaEntradaCanonica()
+    {
+        // Bug de producción (2026-07-28): "SQLite Error 19: UNIQUE constraint failed:
+        // SyncBaseline.Id". El UPDATE del PK asumía que el id nuevo estaba libre, pero en un
+        // workspace real conviven las DOS entradas: la del HashId viejo (de antes de la migración
+        // de identidad) y la del id canónico del servidor (que el pull ya había traído). Renombrar
+        // una sobre la otra viola el PK y aborta el ciclo entero de sync.
+        //
+        // Se conserva la entrada del id CANÓNICO y se descarta la del viejo: la canónica es la que
+        // matchea con el servidor. En el peor caso los hashes difieren y el próximo ciclo detecta
+        // un cambio y pushea de más -- nunca se pierde contenido, que es la única propiedad que no
+        // se puede negociar acá.
+        var index = new SyncIndex(_dbPath);
+        index.SaveBaseline(new Dictionary<string, SyncBaselineItem>
+        {
+            ["id-viejo"] = new SyncBaselineItem("id-viejo", SyncItemKind.Project, "hash-viejo", "remoto-viejo", DateTimeOffset.FromUnixTimeSeconds(1000), LastRemoteVersion: 1),
+            ["id-nuevo"] = new SyncBaselineItem("id-nuevo", SyncItemKind.Project, "hash-canonico", "remoto-canonico", DateTimeOffset.FromUnixTimeSeconds(2000), LastRemoteVersion: 7),
+        });
+
+        index.RekeyBaseline("id-viejo", "id-nuevo");
+        var loaded = index.LoadBaseline();
+
+        Assert.False(loaded.ContainsKey("id-viejo"), "el id viejo no debe sobrevivir a la reidentificación");
+        Assert.True(loaded.ContainsKey("id-nuevo"));
+        Assert.Equal("hash-canonico", loaded["id-nuevo"].LastLocalHash);
+        Assert.Equal(7, loaded["id-nuevo"].LastRemoteVersion);
+    }
+
     // ---- SyncMeta / FullPullDone (Task 3.3/3.4, design §7) --------------------------------------
     // El pull completo (since=null) tiene que correr UNA sola vez tras el upgrade a este modelo de
     // identidad: con un pull incremental, un ítem que ya existe en el servidor pero no cambió desde

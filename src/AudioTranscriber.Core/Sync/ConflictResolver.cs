@@ -29,8 +29,21 @@ public sealed class ConflictResolver
         if (File.Exists(canonicalTranscriptPath))
         {
             var localText = File.ReadAllText(canonicalTranscriptPath);
-            var conflictPath = BuildConflictSiblingPath(canonicalTranscriptPath, now);
-            File.WriteAllText(conflictPath, localText);
+
+            // Preservar es para no perder TRABAJO del usuario, no para copiar archivos por reflejo.
+            // Antes esto solo miraba File.Exists, y un .txt vacío existe -- así se generaba un
+            // hermano de 0 bytes que la UI listaba como una nota más: el usuario veía su nota
+            // DUPLICADA (bug de producción, 2026-07-28). Sin contenido local, o con un local que
+            // ya es idéntico al remoto, no hay nada que rescatar y el hermano es puro ruido.
+            var hayEdicionLocalQueRescatar =
+                !string.IsNullOrWhiteSpace(localText) &&
+                !string.Equals(localText, remoteText, StringComparison.Ordinal);
+
+            if (hayEdicionLocalQueRescatar)
+            {
+                var conflictPath = BuildConflictSiblingPath(canonicalTranscriptPath, now);
+                File.WriteAllText(conflictPath, localText);
+            }
         }
 
         var dir = Path.GetDirectoryName(canonicalTranscriptPath);

@@ -27,6 +27,40 @@ public class ConflictResolverTests : IDisposable
     }
 
     [Fact]
+    public void Resolve_ConArchivoLocalVacio_NoCreaHermanoDeCeroBytes()
+    {
+        // Bug de producción (2026-07-28): el usuario vio una nota DUPLICADA en la app -- la buena y
+        // otra de 0 KB con el sufijo .conflicto-*. La causa: acá solo se preguntaba File.Exists,
+        // pero un .txt vacío EXISTE, así que se preservaba "la copia local" que no tenía nada
+        // adentro. Ese .txt huérfano lo lista la UI como una nota más.
+        //
+        // Preservar es para no perder trabajo del usuario. Sin contenido no hay trabajo que perder,
+        // y el archivo hermano pasa a ser ruido que encima confunde (parece que se duplicó la nota).
+        var canonicalPath = Path.Combine(_root, "nota.txt");
+        File.WriteAllText(canonicalPath, "");
+        var now = new DateTimeOffset(2026, 7, 28, 10, 30, 45, TimeSpan.Zero);
+
+        _resolver.Resolve("t1", serverVersion: 11, canonicalPath, "texto remoto del servidor", now);
+
+        Assert.Empty(Directory.GetFiles(_root, "*.conflicto-*"));
+        Assert.Equal("texto remoto del servidor", File.ReadAllText(canonicalPath));
+    }
+
+    [Fact]
+    public void Resolve_ConLocalIdenticoAlRemoto_NoCreaHermano()
+    {
+        // Mismo criterio: si el texto local ya es EXACTAMENTE el remoto, no hay edición local que
+        // rescatar. Un hermano acá sería una copia perfecta del archivo de al lado.
+        var canonicalPath = Path.Combine(_root, "nota.txt");
+        File.WriteAllText(canonicalPath, "mismo texto en los dos lados");
+        var now = new DateTimeOffset(2026, 7, 28, 10, 30, 45, TimeSpan.Zero);
+
+        _resolver.Resolve("t1", serverVersion: 11, canonicalPath, "mismo texto en los dos lados", now);
+
+        Assert.Empty(Directory.GetFiles(_root, "*.conflicto-*"));
+    }
+
+    [Fact]
     public void Resolve_ConContenidoLocalPrevio_PreservaLocalComoHermanoYEscribeLaRemotaEnLaCanonica()
     {
         var canonicalPath = Path.Combine(_root, "nota.txt");
