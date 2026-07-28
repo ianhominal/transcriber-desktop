@@ -48,22 +48,41 @@
                 <Border Grid.Row="1" Style="{StaticResource Card}" Background="{DynamicResource SurfaceAlt}"
                         Padding="10" Margin="0,0,0,10">
                     <StackPanel>
-                        <StackPanel Orientation="Horizontal">
-                            <TextBox Style="{StaticResource InputBox}" Width="220" Height="32"
-                                     VerticalContentAlignment="Center"
+                        <!-- Grid y no StackPanel horizontal: con anchos fijos (220 + 100 + boton) la
+                             fila no entraba en la ventana y "Invitar" quedaba cortado. Acá el email
+                             toma el espacio sobrante y los otros dos piden lo suyo, asi que la fila
+                             entra sea cual sea el ancho.
+                             Tampoco se fija Height: el estilo InputBox ya trae Padding 8,6, y con
+                             Height 32 el area de texto quedaba mas baja que el renglon, asi que se
+                             veia el recuadro vacio aunque hubiera texto escrito. Mismo criterio que
+                             LoginWindow y MergeNotesWindow, que no fijan alto. -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBox Grid.Column="0" Style="{StaticResource InputBox}" MinWidth="140"
                                      Text="{Binding NewMemberEmail, UpdateSourceTrigger=PropertyChanged}"
                                      AutomationProperties.Name="Email de la persona a invitar"
-                                     ToolTip="Email de la persona a invitar (tiene que tener cuenta en el producto)."/>
-                            <ComboBox Margin="6,0,0,0" Width="100" Height="32" VerticalContentAlignment="Center"
+                                     ToolTip="Email exacto de la persona a invitar. Tiene que tener una cuenta ya creada."/>
+
+                            <ComboBox Grid.Column="1" Margin="6,0,0,0" Width="96"
+                                      VerticalContentAlignment="Center"
                                       SelectedValuePath="Tag" SelectedValue="{Binding NewMemberRole}">
                                 <ComboBoxItem Content="Admin" Tag="admin"/>
                                 <ComboBoxItem Content="Editor" Tag="editor" IsSelected="True"/>
                                 <ComboBoxItem Content="Viewer" Tag="viewer"/>
                             </ComboBox>
-                            <Button Content="Invitar" Style="{StaticResource PrimaryButton}"
-                                    Margin="6,0,0,0" Padding="10,4" VerticalAlignment="Center"
+
+                            <Button Grid.Column="2" Content="Invitar" Style="{StaticResource PrimaryButton}"
+                                    Margin="6,0,0,0" Padding="12,6"
                                     Command="{Binding InviteCommand}"/>
-                        </StackPanel>
+                        </Grid>
+
+                        <TextBlock Text="Necesitás el email exacto con el que se registró."
+                                   Style="{StaticResource CaptionText}" Margin="0,6,0,0" TextWrapping="Wrap"/>
                         <TextBlock Text="{Binding InviteErrorMessage}" Foreground="{DynamicResource Danger}"
                                    TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0"
                                    Visibility="{Binding InviteErrorMessage, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>

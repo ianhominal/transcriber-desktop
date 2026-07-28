@@ -65,4 +65,34 @@ public class WindowInstantiationUiTests
 
             Assert.Null(exception);
         });
+
+    /// <summary>
+    /// Cubre la sección "Actualizaciones" agregada acá (barra de progreso + texto de estado): agarra
+    /// cualquier regresión de binding/NameScope en el ProgressBar nuevo (x:Name inexistente, recurso
+    /// dinámico roto, etc.) que la instanciación desnuda ya detecta para el resto de la ventana.
+    /// </summary>
+    [Fact]
+    public void SettingsWindow_instantiates_shows_and_renders_without_throwing() =>
+        UiThread.Invoke(() =>
+        {
+            UiTestApplication.EnsureCreated();
+
+            var exception = Record.Exception(() =>
+            {
+                var window = new SettingsWindow
+                {
+                    ShowInTaskbar = false,
+                    WindowStartupLocation = WindowStartupLocation.Manual,
+                    Left = -3000,
+                    Top = -3000,
+                };
+
+                window.Show();
+                UiTestApplication.PumpDispatcherUntilIdle();
+                window.UpdateLayout();
+                window.Close();
+            });
+
+            Assert.Null(exception);
+        });
 }

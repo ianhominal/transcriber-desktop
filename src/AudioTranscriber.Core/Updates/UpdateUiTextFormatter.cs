@@ -64,4 +64,28 @@ public static class UpdateUiTextFormatter
             string.IsNullOrWhiteSpace(r.ErrorMessage) ? GenericErrorText : r.ErrorMessage,
         _ => string.Empty,
     };
+
+    /// <summary>
+    /// Texto mientras se descarga una actualización YA encontrada, con el porcentaje real que
+    /// reporta Velopack. Antes de esto no había ningún indicador acá: el chequeo tarda un segundo,
+    /// pero bajar el instalador completo (~105 MB) tarda varios minutos, y en ese lapso la UI se
+    /// quedaba en "Buscando actualizaciones…" sin cambiar -- el usuario creía que se había colgado.
+    /// Si <see cref="UpdateProgress.TotalBytes"/> no vino informado (o vino cero/negativo), se omite
+    /// el tamaño -- nunca se inventa un número.
+    /// </summary>
+    public static string FormatDownloadingText(UpdateProgress progress)
+    {
+        var sizeSuffix = progress.TotalBytes is > 0
+            ? $" de {FormatMegabytes(progress.TotalBytes.Value)}"
+            : string.Empty;
+        return $"Descargando actualización — {progress.Percent}%{sizeSuffix}.";
+    }
+
+    /// <summary>True mientras hay una descarga en curso (progreso no nulo) -- controla la
+    /// visibilidad de la barra de progreso en SettingsWindow.</summary>
+    public static bool ShouldShowDownloadProgress(UpdateProgress? progress) => progress is not null;
+
+    /// <summary>Redondeado al entero más cercano: alcanza para el mensaje ("de 105 MB"), no hace
+    /// falta más precisión y un decimal suelto ensucia la lectura.</summary>
+    private static string FormatMegabytes(long bytes) => $"{Math.Round(bytes / 1024.0 / 1024.0)} MB";
 }

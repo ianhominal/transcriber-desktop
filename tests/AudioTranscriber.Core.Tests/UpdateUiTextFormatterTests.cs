@@ -125,4 +125,54 @@ public class UpdateUiTextFormatterTests
 
         Assert.Equal("No se pudo verificar (revisá tu conexión).", text);
     }
+
+    // ---- FormatDownloadingText (progreso real de descarga, ver UpdateService.DownloadProgressChanged) ----
+
+    [Fact]
+    public void FormatDownloadingText_ConTamanoConocido_MuestraPorcentajeYTamanoEnMb()
+    {
+        // 105 MB exactos (105 * 1024 * 1024) para que el redondeo no meta ruido en el assert.
+        var text = UpdateUiTextFormatter.FormatDownloadingText(new UpdateProgress(45, 110_100_480));
+
+        Assert.Equal("Descargando actualización — 45% de 105 MB.", text);
+    }
+
+    [Fact]
+    public void FormatDownloadingText_SinTamanoConocido_MuestraSoloElPorcentaje()
+    {
+        var text = UpdateUiTextFormatter.FormatDownloadingText(new UpdateProgress(45, null));
+
+        Assert.Equal("Descargando actualización — 45%.", text);
+    }
+
+    [Fact]
+    public void FormatDownloadingText_ConTamanoCeroOInvalido_NoInventaUnTamano()
+    {
+        var text = UpdateUiTextFormatter.FormatDownloadingText(new UpdateProgress(10, 0));
+
+        Assert.Equal("Descargando actualización — 10%.", text);
+    }
+
+    [Fact]
+    public void FormatDownloadingText_RedondeaLosMegabytesAlEnteroMasCercano()
+    {
+        // 100.4 MB -> redondea a 100.
+        var text = UpdateUiTextFormatter.FormatDownloadingText(new UpdateProgress(1, 105_295_923));
+
+        Assert.Equal("Descargando actualización — 1% de 100 MB.", text);
+    }
+
+    // ---- ShouldShowDownloadProgress ----
+
+    [Fact]
+    public void ShouldShowDownloadProgress_ConProgresoActivo_EsTrue()
+    {
+        Assert.True(UpdateUiTextFormatter.ShouldShowDownloadProgress(new UpdateProgress(0, null)));
+    }
+
+    [Fact]
+    public void ShouldShowDownloadProgress_SinProgreso_EsFalse()
+    {
+        Assert.False(UpdateUiTextFormatter.ShouldShowDownloadProgress(null));
+    }
 }

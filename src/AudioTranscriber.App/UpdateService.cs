@@ -128,6 +128,28 @@ public sealed class UpdateService
     /// </summary>
     public event Action<UpdateCheckResult>? CheckCompleted;
 
+    /// <summary>
+    /// Progreso de la descarga en curso -- null cuando no hay ninguna descarga corriendo (todavía no
+    /// empezó, o ya terminó). Igual que <see cref="LastResult"/>, pensado para que la UI (ver
+    /// SettingsWindow) pueda pintar el estado ACTUAL sin haber estado suscripta desde el arranque del
+    /// chequeo (p.ej. si Configuración se abre a mitad de una descarga ya en curso).
+    /// </summary>
+    public UpdateProgress? LastProgress { get; private set; }
+
+    /// <summary>
+    /// Se dispara en cada tick de progreso que reporta Velopack mientras se descarga una
+    /// actualización ya encontrada (ver <see cref="CheckAndDownloadCoreAsync"/>).
+    /// <para/>
+    /// <b>OJO:</b> a diferencia de <see cref="UpdateReady"/>/<see cref="CheckCompleted"/> (que se
+    /// disparan desde el hilo que llamó al chequeo), Velopack invoca su callback de progreso desde un
+    /// hilo de background PROPIO -- nunca el de UI, ni siquiera cuando el chequeo se lanzó desde un
+    /// handler de click. Cualquier suscriptor que toque bindings/controles tiene que marshalear al
+    /// Dispatcher (ver <c>SettingsWindow.OnDownloadProgressChanged</c>); si no, rompe en runtime de
+    /// forma intermitente y difícil de reproducir (excepción de cross-thread access, no siempre en el
+    /// mismo tick).
+    /// </summary>
+    public event Action<UpdateProgress>? DownloadProgressChanged;
+
     /// <summary>Guarda <see cref="LastResult"/>, avisa por <see cref="CheckCompleted"/> y devuelve el mismo resultado (para poder envolver cada <c>return</c> sin duplicar las dos líneas).</summary>
     private UpdateCheckResult RecordResult(UpdateCheckResult result)
     {
@@ -208,7 +230,21 @@ public sealed class UpdateService
 
                 var newVersion = updateInfo.TargetFullRelease.Version.ToString();
                 UpdateLogger.Log($"CheckAndDownloadCoreAsync: update found (version={newVersion}). Downloading...");
-                await manager.DownloadUpdatesAsync(updateInfo);
+
+                // Tamaño del paquete completo (bytes), si Velopack lo informó -- se resuelve UNA
+                // vez acá y se reusa en cada tick de progreso (ver DownloadProgressChanged) en vez
+                // de leerlo de nuevo por cada callback. Cero/negativo se trata como "no disponible"
+                // (UpdateUiTextFormatter.FormatDownloadingText no inventa un tamaño).
+                var totalBytes = updateInfo.TargetFullRelease.Size is > 0
+                    ? updateInfo.TargetFullRelease.Size
+                    : (long?)null;
+
+                await manager.DownloadUpdatesAsync(updateInfo, percent =>
+                {
+                    var progress = new UpdateProgress(percent, totalBytes);
+                    LastProgress = progress;
+                    DownloadProgressChanged?.Invoke(progress);
+                });
                 UpdateLogger.Log($"CheckAndDownloadCoreAsync: download complete (version={newVersion}).");
 
                 _manager = manager;
@@ -248,6 +284,10 @@ public sealed class UpdateService
         }
         finally
         {
+            // Cubre tanto el camino feliz (descarga terminada, ver RecordResult(Available) arriba)
+            // como cualquier excepción a mitad de descarga: en ningún caso debe quedar un progreso
+            // "pegado" mostrándose después de que el chequeo ya terminó.
+            LastProgress = null;
             _checkGate.Release();
         }
     }

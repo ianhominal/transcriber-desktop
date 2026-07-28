@@ -371,7 +371,16 @@
                      transitorio): es texto informativo, no una alerta — la jerarquía visual la da
                      el botón primario cuando corresponde, no el color del texto. -->
                 <TextBlock x:Name="UpdateStatusText" TextWrapping="Wrap" FontSize="12"
-                           Foreground="{DynamicResource TextMuted}" Margin="0,0,0,12"/>
+                           Foreground="{DynamicResource TextMuted}" Margin="0,0,0,4"/>
+
+                <!-- Solo visible mientras hay una descarga en curso (ver
+                     UpdateService.DownloadProgressChanged / SettingsWindow.RenderDownloadingProgress).
+                     Determinada (Minimum/Maximum fijos, Value = porcentaje real de Velopack), mismo
+                     criterio visual que las barras de descarga/transcripción de MainWindow. -->
+                <ProgressBar x:Name="UpdateProgressBar" Height="8" Margin="0,0,0,12"
+                             Minimum="0" Maximum="100"
+                             Foreground="{DynamicResource Accent}" Background="{DynamicResource SurfaceAlt}"
+                             BorderThickness="0" Visibility="Collapsed"/>
 
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button x:Name="CheckUpdatesButton" Content="Buscar actualizaciones"

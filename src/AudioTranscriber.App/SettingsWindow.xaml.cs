@@ -80,13 +80,27 @@ public partial class SettingsWindow : Window
         // background (ver UpdateService.StartPeriodicChecks), o un manual anterior -- en vez de
         // arrancar en blanco como antes. Si todavía no terminó ninguno (UpdateService.LastResult
         // null), FormatPassiveStatus cae al mismo texto "Buscando actualizaciones…".
-        RenderPassiveStatus(UpdateService.Instance.LastResult);
+        //
+        // Caso especial que motivó este cambio: si Configuración se abre a mitad de la descarga
+        // automática de arranque (esa descarga puede tardar minutos, ver el bug documentado en
+        // UpdateService), LastProgress ya viene informado y tiene prioridad sobre LastResult -- si
+        // no, la ventana mostraría "Buscando actualizaciones…" (o un resultado viejo) durante toda
+        // la descarga en vez del porcentaje real.
+        if (UpdateService.Instance.LastProgress is { } activeProgress)
+            RenderDownloadingProgress(activeProgress);
+        else
+            RenderPassiveStatus(UpdateService.Instance.LastResult);
 
         // Mientras la ventana sigue abierta, un chequeo automático/periódico que termine en
         // background debe reflejarse acá sin que el usuario tenga que cerrar y reabrir Configuración
         // -- mismo criterio de "no quedar desactualizado" que ya usa RefreshAutoStartState arriba.
         UpdateService.Instance.CheckCompleted += OnUpdateCheckCompleted;
         Closed += (_, _) => UpdateService.Instance.CheckCompleted -= OnUpdateCheckCompleted;
+
+        // Progreso de descarga EN VIVO (ver el comentario de OnDownloadProgressChanged sobre el
+        // hilo desde el que Velopack dispara este evento).
+        UpdateService.Instance.DownloadProgressChanged += OnDownloadProgressChanged;
+        Closed += (_, _) => UpdateService.Instance.DownloadProgressChanged -= OnDownloadProgressChanged;
     }
 
     /// <summary>
@@ -104,12 +118,38 @@ public partial class SettingsWindow : Window
         RenderPassiveStatus(result);
     }
 
+    /// <summary>
+    /// UpdateService.DownloadProgressChanged NUNCA llega en el hilo de UI (Velopack lo dispara desde
+    /// un hilo de background propio, documentado en el evento) -- a diferencia de
+    /// OnUpdateCheckCompleted de arriba, este SIEMPRE necesita marshalear, no "por las dudas".
+    /// </summary>
+    private void OnDownloadProgressChanged(UpdateProgress progress)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => OnDownloadProgressChanged(progress));
+            return;
+        }
+        RenderDownloadingProgress(progress);
+    }
+
     private void RenderPassiveStatus(UpdateCheckResult? result)
     {
+        UpdateProgressBar.Visibility = Visibility.Collapsed;
         UpdateStatusText.Text = UpdateUiTextFormatter.FormatPassiveStatus(result);
         RestartNowButton.Visibility = UpdateUiTextFormatter.ShouldShowRestartButton(result)
             ? Visibility.Visible
             : Visibility.Collapsed;
+    }
+
+    private void RenderDownloadingProgress(UpdateProgress progress)
+    {
+        UpdateStatusText.Text = UpdateUiTextFormatter.FormatDownloadingText(progress);
+        UpdateProgressBar.Value = progress.Percent;
+        UpdateProgressBar.Visibility = UpdateUiTextFormatter.ShouldShowDownloadProgress(progress)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        RestartNowButton.Visibility = Visibility.Collapsed;
     }
 
     /// <summary>
@@ -133,12 +173,17 @@ public partial class SettingsWindow : Window
     private async void OnCheckUpdatesClick(object sender, RoutedEventArgs e)
     {
         CheckUpdatesButton.IsEnabled = false;
+        UpdateProgressBar.Visibility = Visibility.Collapsed;
         RestartNowButton.Visibility = Visibility.Collapsed;
         UpdateStatusText.Text = UpdateUiTextFormatter.CheckingText;
 
+        // Mientras este await está pendiente, si hay una versión nueva, OnDownloadProgressChanged
+        // (ya suscripto desde el constructor) va actualizando UpdateStatusText/UpdateProgressBar con
+        // el progreso real -- acá solo queda pintar el resultado FINAL cuando termina.
         var result = await UpdateService.Instance.CheckForUpdateManualAsync();
 
         UpdateStatusText.Text = UpdateUiTextFormatter.FormatResult(result);
+        UpdateProgressBar.Visibility = Visibility.Collapsed;
         RestartNowButton.Visibility = UpdateUiTextFormatter.ShouldShowRestartButton(result)
             ? Visibility.Visible
             : Visibility.Collapsed;
