@@ -104,15 +104,17 @@ public partial class InvitesViewModel : ObservableObject
 /// <summary>
 /// Fila bindeable de <see cref="InvitesViewModel.Invites"/> (wrapea <see cref="InviteDto"/>). El
 /// rol se muestra TAL CUAL lo manda el servidor, sin traducirlo a permisos -- esa decisión es
-/// 100% del backend (ver header de <see cref="InvitesViewModel"/>). El desktop no resuelve el
-/// nombre del proyecto acá: el contrato de <c>GET /api/invites</c> (Phase 9.5) no lo incluye, y
-/// agregarlo hoy requeriría una llamada extra por invitación fuera del alcance de esta fase.
+/// 100% del backend (ver header de <see cref="InvitesViewModel"/>). <see cref="DisplayProjectName"/>
+/// (Phase 17): <c>GET /api/invites</c> ahora manda <see cref="InviteDto.ProjectName"/> además del
+/// id crudo, así que la ventana deja de mostrar un UUID -- se conserva un fallback al id por si
+/// algún build viejo del servidor todavía no lo manda.
 /// </summary>
 public partial class InviteVm : ObservableObject
 {
     public string Id { get; }
     public string ProjectId { get; }
     public string Role { get; }
+    public string DisplayProjectName { get; }
 
     [ObservableProperty]
     private bool _isBusy;
@@ -125,5 +127,6 @@ public partial class InviteVm : ObservableObject
         Id = dto.Id;
         ProjectId = dto.ProjectId;
         Role = dto.Role;
+        DisplayProjectName = string.IsNullOrWhiteSpace(dto.ProjectName) ? dto.ProjectId : dto.ProjectName;
     }
 }

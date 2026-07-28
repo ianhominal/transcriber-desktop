@@ -49,6 +49,42 @@ public sealed class InvitesApiClient
     }
 
     /// <summary>
+    /// Trae las invitaciones `pending` ENVIADAS para un proyecto -- <c>GET /api/invites?projectId=</c>
+    /// (Phase 9.5: "la otra vista del mismo endpoint", fuera de alcance en Phase 16, ahora en
+    /// alcance para <c>ShareWindow</c>, Phase 17). La RLS de <c>project_invites</c> (capability
+    /// <c>share</c>) es la única que scopea esta vista; este cliente no repite ese chequeo.
+    /// </summary>
+    public async Task<List<InviteDto>> GetSentInvitesAsync(string accessToken, string projectId, CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/api/invites?projectId={Uri.EscapeDataString(projectId)}");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        using var resp = await _http.SendAsync(req, ct);
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new SyncApiException($"listar invitaciones enviadas falló ({(int)resp.StatusCode}): {json}", (int)resp.StatusCode);
+
+        var parsed = JsonSerializer.Deserialize<ListInvitesResponse>(json);
+        return parsed?.Invites ?? new List<InviteDto>();
+    }
+
+    /// <summary>
+    /// Cancela una invitación que vos mandaste -- <c>DELETE /api/invites/{id}</c>. El invitado no
+    /// necesita hacer nada (spec "cancelar no requiere acción del invitado"); el servidor la borra
+    /// directo (ver <c>web/src/lib/invites/store.ts cancelInvite</c>).
+    /// </summary>
+    public async Task CancelInviteAsync(string accessToken, string inviteId, CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Delete, $"{_baseUrl}/api/invites/{inviteId}");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        using var resp = await _http.SendAsync(req, ct);
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+            throw new SyncApiException($"cancelar invitación falló ({(int)resp.StatusCode}): {json}", (int)resp.StatusCode);
+    }
+
+    /// <summary>
     /// Acepta o rechaza una invitación propia -- <c>POST /api/invites/{id}</c> body
     /// <c>{ action: "accept" | "reject" }</c> (Phase 9.3). La membresía se crea del lado del
     /// servidor recién al aceptar (RPC <c>accept_project_invite</c>, transaccional); este cliente
@@ -84,6 +120,14 @@ public sealed class InviteDto
 {
     [JsonPropertyName("id")] public string Id { get; set; } = "";
     [JsonPropertyName("project_id")] public string ProjectId { get; set; } = "";
+
+    /// <summary>
+    /// Nombre del proyecto (Team Sharing slice 1b, Phase 17): <c>GET /api/invites</c> ahora lo
+    /// manda además del id crudo. Nullable a propósito -- si por algún motivo el servidor todavía
+    /// no lo mandara, <c>InviteVm</c> (App) cae al id como antes en vez de mostrar un campo vacío.
+    /// </summary>
+    [JsonPropertyName("project_name")] public string? ProjectName { get; set; }
+
     [JsonPropertyName("invited_user_id")] public string InvitedUserId { get; set; } = "";
     [JsonPropertyName("role")] public string Role { get; set; } = "";
     [JsonPropertyName("invited_by")] public string InvitedBy { get; set; } = "";

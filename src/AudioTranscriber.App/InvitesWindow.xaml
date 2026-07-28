@@ -62,7 +62,7 @@
                                         <StackPanel>
                                             <TextBlock FontSize="13" FontWeight="SemiBold"
                                                        Foreground="{DynamicResource TextPrimary}">
-                                                <Run Text="Proyecto "/><Run Text="{Binding ProjectId, Mode=OneWay}"/>
+                                                <Run Text="Proyecto "/><Run Text="{Binding DisplayProjectName, Mode=OneWay}"/>
                                             </TextBlock>
                                             <TextBlock FontSize="11" Foreground="{DynamicResource TextMuted}"
                                                        Margin="0,2,0,0">

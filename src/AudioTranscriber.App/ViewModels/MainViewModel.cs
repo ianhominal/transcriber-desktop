@@ -1475,6 +1475,34 @@ public partial class MainViewModel : ObservableObject, IDisposable
         window.Show();
     }
 
+    // ---- Compartir proyecto (Team Sharing slice 1b, Phase 17, ver MembersApiClient / ShareWindow) ----
+
+    /// <summary>Mismo gate que <see cref="CanOpenProjectAssistant"/>: sin proyecto elegido (o con el
+    /// proyecto "General", que no es compartible) no tiene sentido abrir "Compartir".</summary>
+    private bool CanOpenShareWindow() => SelectedProject is { IsGeneral: false };
+
+    /// <summary>
+    /// Abre <see cref="ShareWindow"/> para el proyecto seleccionado. Requiere
+    /// <see cref="ProjectVm.RemoteId"/> resuelto -- mismo criterio defensivo que
+    /// <see cref="OpenProjectAssistant"/>: sin id remoto no hay proyecto contra el cual pedirle
+    /// miembros/invitaciones al servidor.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanOpenShareWindow))]
+    private void OpenShareWindow()
+    {
+        var project = SelectedProject;
+        if (project is null)
+            return;
+        if (project.RemoteId is not { } remoteId || string.IsNullOrEmpty(remoteId))
+        {
+            StatusMessage = "Este proyecto todavía no terminó de sincronizarse. Esperá un momento y volvé a intentar.";
+            return;
+        }
+
+        var window = new ShareWindow(remoteId, project.Title) { Owner = Application.Current.MainWindow };
+        window.Show();
+    }
+
     private bool CanOpenAssistant() => SelectedAudio is not null ? CanOpenNoteDetail() : CanOpenProjectAssistant();
 
     /// <summary>

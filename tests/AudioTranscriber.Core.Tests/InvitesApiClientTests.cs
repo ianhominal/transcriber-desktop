@@ -58,6 +58,24 @@ public class InvitesApiClientTests
     }
 
     [Fact]
+    public async Task GetPendingInvites_ParseaElNombreDelProyecto()
+    {
+        // Team Sharing slice 1b, Phase 17: GET /api/invites ahora manda project_name además del
+        // project_id crudo -- InvitesWindow ya no debe mostrar el UUID (ver InviteVm.ProjectName).
+        var handler = new FakeHandler(_ =>
+            Json("""
+                {"invites":[{"id":"inv-1","project_id":"p1","project_name":"Reuniones de equipo",
+                "invited_user_id":"u2","role":"viewer","invited_by":"u1","status":"pending",
+                "created_at":"2026-07-28T00:00:00Z","resolved_at":null}]}
+                """));
+        var client = new InvitesApiClient(new HttpClient(handler), "https://app.vercel.app");
+
+        var invites = await client.GetPendingInvitesAsync("AT");
+
+        Assert.Equal("Reuniones de equipo", invites[0].ProjectName);
+    }
+
+    [Fact]
     public async Task GetPendingInvites_SinInvitaciones_DevuelveListaVacia()
     {
         var handler = new FakeHandler(_ => Json("""{"invites":[]}"""));
@@ -112,6 +130,49 @@ public class InvitesApiClientTests
         await Assert.ThrowsAsync<ArgumentException>(() => client.RespondInviteAsync("AT", "inv-1", "cancel"));
 
         Assert.Null(handler.LastRequest);
+    }
+
+    [Fact]
+    public async Task GetSentInvites_MandaProjectIdComoQueryYParseaLaLista()
+    {
+        // Team Sharing slice 1b, Phase 17: GET /api/invites?projectId= -- "la otra vista del mismo
+        // endpoint" (Phase 9.5), ahora sí en alcance para ShareWindow ("invitaciones enviadas").
+        var handler = new FakeHandler(_ =>
+            Json("""
+                {"invites":[{"id":"inv-2","project_id":"p1","invited_user_id":"u3","role":"editor",
+                "invited_by":"u1","status":"pending","created_at":"2026-07-28T00:00:00Z","resolved_at":null}]}
+                """));
+        var client = new InvitesApiClient(new HttpClient(handler), "https://app.vercel.app");
+
+        var invites = await client.GetSentInvitesAsync("AT", "p1");
+
+        Assert.Equal("Bearer", handler.LastRequest!.Headers.Authorization!.Scheme);
+        Assert.Contains("/api/invites?projectId=p1", handler.LastRequest.RequestUri!.ToString());
+        Assert.Single(invites);
+        Assert.Equal("inv-2", invites[0].Id);
+    }
+
+    [Fact]
+    public async Task CancelInvite_MandaDelete()
+    {
+        var handler = new FakeHandler(_ => Json("""{"ok":true}"""));
+        var client = new InvitesApiClient(new HttpClient(handler), "https://app.vercel.app");
+
+        await client.CancelInviteAsync("AT", "inv-2");
+
+        Assert.Equal(HttpMethod.Delete, handler.LastRequest!.Method);
+        Assert.Contains("/api/invites/inv-2", handler.LastRequest.RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task CancelInvite_Error_LanzaSyncApiExceptionConStatusCode()
+    {
+        var handler = new FakeHandler(_ => Json("""{"error":"Invitación no encontrada o ya resuelta."}""", HttpStatusCode.NotFound));
+        var client = new InvitesApiClient(new HttpClient(handler), "https://app.vercel.app");
+
+        var ex = await Assert.ThrowsAsync<SyncApiException>(() => client.CancelInviteAsync("AT", "inv-2"));
+
+        Assert.Equal(404, ex.StatusCode);
     }
 
     [Fact]
