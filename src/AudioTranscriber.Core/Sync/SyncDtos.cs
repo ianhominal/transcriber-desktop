@@ -141,6 +141,18 @@ public sealed class RemoteTranscription
 
     /// <summary>Ver <see cref="RemoteProject.Version"/> -- mismo contrato, misma semántica (ADR-07).</summary>
     [JsonPropertyName("version")] public int Version { get; set; }
+
+    /// <summary>
+    /// Estado de audio explícito (Team Sharing slice 1b, Phase 15, ADR-13/14): 'available' |
+    /// 'pending_upload' | 'unavailable', calculado server-side (ver
+    /// <c>web/src/lib/sync/audioState.ts</c>, <c>computeAudioState</c> -- único lugar que decide la
+    /// regla, ADR-13 "un solo contrato de servidor, dos vistas"). Opcional, backward-compatible con
+    /// un servidor viejo que todavía no lo manda (mismo criterio que <see cref="RemoteProject.ParentProjectId"/>).
+    /// El desktop hoy no muestra este estado en la UI (Phase 15 cubre solo el DTO + la descarga ya
+    /// existente basada en <see cref="AudioUrlSigned"/>); queda disponible para consumo futuro sin
+    /// romper nada mientras tanto.
+    /// </summary>
+    [JsonPropertyName("audio_state")] public string? AudioState { get; set; }
 }
 
 public sealed class PullResponse

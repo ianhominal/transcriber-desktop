@@ -232,6 +232,9 @@
                             Margin="8,0,0,0" Command="{Binding OpenWorkspaceCommand}"/>
                     <Button Content="Sincronización" Style="{StaticResource SecondaryButton}"
                             Margin="8,0,0,0" Command="{Binding OpenSyncWindowCommand}"/>
+                    <Button Content="Invitaciones" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Command="{Binding OpenInvitesWindowCommand}"
+                            ToolTip="Ver, aceptar o rechazar invitaciones a proyectos compartidos."/>
                     <Button Content="Configuración" Style="{StaticResource SecondaryButton}"
                             Margin="8,0,0,0" Command="{Binding OpenSettingsCommand}"/>
                 </StackPanel>

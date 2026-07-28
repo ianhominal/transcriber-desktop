@@ -1431,6 +1431,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
         window.Show();
     }
 
+    // ---- Invitaciones pendientes (Team Sharing slice 1b, Phase 16, ver InvitesApiClient / InvitesWindow) ----
+
+    [RelayCommand]
+    private void OpenInvitesWindow()
+    {
+        var window = new InvitesWindow { Owner = Application.Current.MainWindow };
+        window.Show();
+    }
+
     // ---- Asistente del proyecto (chat acotado a un proyecto + atajos + Combinar en documento) -----
 
     private bool CanOpenProjectAssistant() => SelectedProject is { IsGeneral: false };

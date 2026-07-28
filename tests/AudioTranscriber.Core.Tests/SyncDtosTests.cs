@@ -262,6 +262,41 @@ public class SyncDtosTests
         }
     }
 
+    // ---- Team Sharing slice 1b, Phase 15.1 (design ADR-13/14, spec "Estado de audio explícito en
+    // el read-path"): `audio_state` en el pull ------------------------------------------------
+
+    [Fact]
+    public void RemoteTranscription_Deserializa_AudioState()
+    {
+        // Mismo contrato que web/src/lib/sync/audioState.ts (computeAudioState): el pull manda
+        // 'available' | 'pending_upload' | 'unavailable' por transcripción.
+        var json = """
+            {
+                "id": "t1",
+                "audio_name": "nota.mp3",
+                "text": "hola",
+                "updated_at": "2026-07-28T00:00:00Z",
+                "audio_state": "pending_upload"
+            }
+            """;
+
+        var transcription = JsonSerializer.Deserialize<RemoteTranscription>(json)!;
+
+        Assert.Equal("pending_upload", transcription.AudioState);
+    }
+
+    [Fact]
+    public void RemoteTranscription_SinAudioState_NoRompeYQuedaNull()
+    {
+        // Compat con un servidor viejo que todavía no manda el campo (backward-compatible, mismo
+        // criterio que ParentProjectId/SyncOrigin en RemoteProject).
+        var json = """{ "id": "t1", "audio_name": "nota.mp3", "text": "hola", "updated_at": "2026-07-28T00:00:00Z" }""";
+
+        var transcription = JsonSerializer.Deserialize<RemoteTranscription>(json)!;
+
+        Assert.Null(transcription.AudioState);
+    }
+
     /// <summary>
     /// El fixture vive DENTRO de este repo (<c>tests/AudioTranscriber.Core.Tests/Fixtures/</c>) y el
     /// csproj lo copia al directorio de salida. Antes se leía de <c>openspec/</c>, en la carpeta
