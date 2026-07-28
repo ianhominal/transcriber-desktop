@@ -84,7 +84,7 @@
     -->
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <AssemblyName>AudioTranscriber</AssemblyName>
-    <Version>1.0.61</Version>
+    <Version>1.0.62</Version>
     <StartupObject>AudioTranscriber.App.App</StartupObject>
   </PropertyGroup>
 
