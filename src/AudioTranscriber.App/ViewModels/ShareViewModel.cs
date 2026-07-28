@@ -35,13 +35,19 @@ public partial class ShareViewModel : ObservableObject
     [ObservableProperty]
     private string _errorMessage = string.Empty;
 
+    // CanInvite() lee estas dos, así que las dos tienen que re-evaluar el comando al cambiar. Sin
+    // esto el botón "Invitar" nace deshabilitado (email vacío) y no se entera nunca de que escribiste
+    // -- es el MISMO olvido que ya se cometió con "Transcribir" y con "Compartir" en MainViewModel.
+    // Ver MainViewModelCommandGatingTests / ViewModelCommandGatingSourceTests.
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(InviteCommand))]
     private string _newMemberEmail = string.Empty;
 
     [ObservableProperty]
     private string _newMemberRole = "viewer";
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(InviteCommand))]
     private bool _isInviting;
 
     [ObservableProperty]

@@ -730,6 +730,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(DeleteSelectedCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenNoteDetailCommand))]
     [NotifyCanExecuteChangedFor(nameof(OpenAssistantCommand))]
+    // Estos dos faltaban y nadie los había reportado: los encontró
+    // ViewModelCommandGatingSourceTests al escanear el fuente. CanExport() y CanOpenInObsidian()
+    // leen SelectedAudio, así que sin esto "Exportar nota" y "Abrir en Obsidian" quedaban
+    // deshabilitados aunque hubiera un audio elegido.
+    [NotifyCanExecuteChangedFor(nameof(ExportNoteCommand))]
+    [NotifyCanExecuteChangedFor(nameof(OpenInObsidianCommand))]
     [NotifyPropertyChangedFor(nameof(ShowProjectFilesView))]
     [NotifyPropertyChangedFor(nameof(ShowEmptyPlaceholder))]
     [NotifyPropertyChangedFor(nameof(TranscribeDisabledReason))]
