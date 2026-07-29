@@ -125,6 +125,15 @@ public sealed class AppSettings
     public string Theme { get; set; } = "System";
 
     /// <summary>
+    /// Si la usuaria ya aceptó explícitamente la descarga de <c>yt-dlp</c> (herramienta externa,
+    /// ~17 MB, bajada desde GitHub -- ver <see cref="AudioTranscriber.Core.WebImport.YtDlpProvider"/>)
+    /// para poder "Transcribir desde una URL". Se pregunta UNA sola vez (ver
+    /// <see cref="AudioTranscriber.App.ViewModels.WebImportViewModel"/>): nunca se baja nada de
+    /// internet sin avisar, pero tampoco se vuelve a interrumpir una vez aceptado.
+    /// </summary>
+    public bool YtDlpConsentGiven { get; set; }
+
+    /// <summary>
     /// Ids (rutas de transcript locales) de notas descartadas en la card de "Resurfacing" (ver
     /// <see cref="AudioTranscriber.Core.Notes.ResurfaceCandidatePicker"/>, brief "Híbrido nativo"
     /// 2026-07-14): equivalente nativo del <c>localStorage</c> que usa la web para persistir

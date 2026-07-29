@@ -16,6 +16,7 @@ using AudioTranscriber.Core.Notes;
 using AudioTranscriber.Core.Sync;
 using AudioTranscriber.Core.Transcription;
 using AudioTranscriber.Core.Updates;
+using AudioTranscriber.Core.WebImport;
 using AudioTranscriber.Core.Workspaces;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -87,6 +88,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// </summary>
     private readonly DiarizationModelProvider _diarizationModelProvider;
 
+    /// <summary>
+    /// Único punto de verdad sobre <c>yt-dlp.exe</c> (herramienta externa para "Transcribir desde
+    /// una URL", ver <see cref="OpenWebImport"/>): existe/no existe en disco, y cómo bajarlo. Misma
+    /// carpeta base que <see cref="_modelDir"/> (subcarpeta propia "tools", no se mezcla con los
+    /// modelos GGML) -- ver <see cref="YtDlpProvider"/> para el detalle de la descarga.
+    /// </summary>
+    private readonly YtDlpProvider _ytDlpProvider;
+
     /// <summary>Corre el modelo de identificación de hablantes sobre el WAV que ya convirtió
     /// <see cref="_service"/> -- ver la región "Identificar quién habla" más abajo.</summary>
     private readonly DiarizationService _diarizationService;
@@ -133,6 +142,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // para todos los modelos locales de la app.
         _diarizationModelProvider = new DiarizationModelProvider(_modelDir);
         _diarizationService = new DiarizationService(_diarizationModelProvider);
+        _ytDlpProvider = new YtDlpProvider(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "AudioTranscriber", "tools"));
 
         _settings = AppSettings.Instance;
         _engine = _settings.Engine;
@@ -1115,6 +1127,49 @@ public partial class MainViewModel : ObservableObject, IDisposable
         };
         if (dialog.ShowDialog() == true)
             AddDroppedFiles(dialog.FileNames);
+    }
+
+    /// <summary>
+    /// "Transcribir desde una URL": abre <see cref="WebImportWindow"/> para pegar un link (YouTube
+    /// y otros sitios soportados por yt-dlp), elegir uno o más elementos y descargarlos. Cada
+    /// archivo que termina de bajar entra al proyecto por <see cref="ImportWebDownloadedFile"/>.
+    /// </summary>
+    [RelayCommand]
+    private void OpenWebImport()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "AudioTranscriberWebImport");
+        var viewModel = new WebImportViewModel(
+            new WebPageAnalyzer(new YtDlpProcessRunner(), _ytDlpProvider.ExecutablePath),
+            new WebAudioDownloader(new YtDlpProcessRunner(), _ytDlpProvider.ExecutablePath),
+            _ytDlpProvider,
+            _settings,
+            tempDir,
+            ImportWebDownloadedFile);
+
+        var window = new WebImportWindow(viewModel) { Owner = Application.Current.MainWindow };
+        window.Show();
+    }
+
+    /// <summary>
+    /// Recibe un archivo YA DESCARGADO por <see cref="WebImportViewModel"/> (a una carpeta temporal)
+    /// y lo mete al proyecto elegido EXACTAMENTE por el mismo camino que "Cargar archivo(s)"/
+    /// arrastrar y soltar (<see cref="AddDroppedFiles"/>) -- sin pipeline propio: mismo destino,
+    /// misma validación de formato, mismo refresh del árbol. Queda en la lista lista para
+    /// transcribir con el botón "Transcribir" de siempre, igual que cualquier otro audio importado.
+    /// </summary>
+    private void ImportWebDownloadedFile(string tempFilePath)
+    {
+        AddDroppedFiles(new[] { tempFilePath });
+        try
+        {
+            if (File.Exists(tempFilePath))
+                File.Delete(tempFilePath);
+        }
+        catch
+        {
+            // El temporal ya se copió al proyecto -- si no se puede borrar (en uso, permisos) no es
+            // fatal, solo queda un archivo de más en la carpeta temporal.
+        }
     }
 
     /// <summary>Reconstruye el árbol de proyectos, preservando la selección actual.</summary>

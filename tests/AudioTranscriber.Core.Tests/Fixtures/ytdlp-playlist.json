@@ -1,0 +1,31 @@
+{
+  "_type": "playlist",
+  "id": "PLxxxxxxxxxxxxxxxx",
+  "title": "Charlas sobre arquitectura",
+  "entries": [
+    {
+      "_type": "url",
+      "id": "abc123",
+      "title": "Charla 1: Clean Architecture",
+      "url": "https://www.youtube.com/watch?v=abc123",
+      "duration": 305,
+      "ie_key": "Youtube"
+    },
+    {
+      "_type": "url",
+      "id": "def456",
+      "title": "Charla 2: Hexagonal",
+      "url": "https://www.youtube.com/watch?v=def456",
+      "duration": null,
+      "ie_key": "Youtube"
+    },
+    {
+      "_type": "url",
+      "id": "ghi789",
+      "title": "Charla 3: Screaming Architecture",
+      "url": "https://www.youtube.com/watch?v=ghi789",
+      "duration": 1523.7,
+      "ie_key": "Youtube"
+    }
+  ]
+}

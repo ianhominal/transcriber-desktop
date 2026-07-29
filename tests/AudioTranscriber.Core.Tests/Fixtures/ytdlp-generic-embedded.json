@@ -1,0 +1,18 @@
+{
+  "_type": "video",
+  "id": "episodio-42",
+  "title": "Episodio 42: Charla sobre yt-dlp",
+  "duration": 1834.5,
+  "webpage_url": "https://example.com/blog/episodio-42",
+  "extractor": "generic",
+  "extractor_key": "Generic",
+  "formats": [
+    {
+      "format_id": "0",
+      "url": "https://example.com/media/ep42.mp3",
+      "ext": "mp3",
+      "acodec": "mp3",
+      "vcodec": "none"
+    }
+  ]
+}

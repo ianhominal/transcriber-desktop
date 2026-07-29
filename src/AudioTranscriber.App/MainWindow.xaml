@@ -465,9 +465,12 @@
                                        Foreground="{DynamicResource AccentText}"
                                        Text="Arrastrá audios aquí"/>
                         </Border>
-                        <Button Content="Cargar archivo(s)" Style="{StaticResource SecondaryButton}" Margin="0,0,0,16"
+                        <Button Content="Cargar archivo(s)" Style="{StaticResource SecondaryButton}" Margin="0,0,0,6"
                                 Command="{Binding AddFilesCommand}"
                                 ToolTip="Elegí uno o más audios desde el Explorador (alternativa a arrastrarlos)."/>
+                        <Button Content="Transcribir desde una URL" Style="{StaticResource SecondaryButton}" Margin="0,0,0,16"
+                                Command="{Binding OpenWebImportCommand}"
+                                ToolTip="Pegá el link de un video, audio o playlist (YouTube y otros sitios soportados)."/>
 
                         <!-- Indicador de grabación: cronómetro + VU meter, solo mientras graba -->
                         <Grid Margin="0,0,0,10" Visibility="{Binding IsRecording, Converter={StaticResource BoolToVisibility}}">
