@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Reflection;
 using System.Windows;
 using WinForms = System.Windows.Forms;
@@ -164,9 +165,18 @@ public class TrayIconServiceUiTests
 
                 // La notificación se pidió (una sola vez), pero contra el fake -- nunca contra el
                 // NotifyIcon real, así que no hubo globo ni sonido.
-                Assert.Single(notifier.Balloons);
-                Assert.Equal("Actualización disponible", notifier.Balloons[0].Title);
-                Assert.Contains("9.9.9", notifier.Balloons[0].Message);
+                //
+                // Se filtra por título en vez de exigir que sea el ÚNICO globo (era un
+                // Assert.Single sobre toda la colección): MeetingDetectionService notifica vía el
+                // singleton TrayIconService.Current, que apunta a ESTE service recién construido,
+                // así que si la detección de reuniones dispara durante el test -- basta con que
+                // haya una app usando el micrófono en la máquina que corre los tests -- aparecía un
+                // segundo globo "Reunión detectada" y el test fallaba sin que hubiera ninguna
+                // regresión. El test ya no depende del estado del micrófono de la máquina; sigue
+                // verificando lo suyo: que el globo de actualización se pidió UNA sola vez.
+                var updateBalloons = notifier.Balloons.Where(b => b.Title == "Actualización disponible").ToList();
+                Assert.Single(updateBalloons);
+                Assert.Contains("9.9.9", updateBalloons[0].Message);
 
                 var updateMenuItem = GetPrivateField<WinForms.ToolStripMenuItem>(service, "_updateMenuItem");
                 // Asserting on Available, not Visible: ToolStripItem.Visible also factors in
