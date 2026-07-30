@@ -40,12 +40,41 @@ public static class AudioAppLister
         try
         {
             using var enumerator = new MMDeviceEnumerator();
-            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            var sessions = device.AudioSessionManager.Sessions;
-            for (int i = 0; i < sessions.Count; i++)
+
+            // TODOS los dispositivos de salida activos, no solo el default.
+            //
+            // Antes esto pedía GetDefaultAudioEndpoint(Render, Role.Multimedia) y se perdía la mitad
+            // del mundo: Windows mantiene DOS defaults distintos -- Multimedia (música/video) y
+            // Communications (llamadas) -- y los separa solo cuando hay un headset conectado, que es
+            // la configuración normal de cualquiera que use auriculares. Discord, Zoom, Teams y Meet
+            // usan el de COMUNICACIONES, así que sus sesiones vivían en un dispositivo que este
+            // método no miraba nunca: el combo mostraba OBS (que sí usa el de multimedia) y decía
+            // "No hay ninguna aplicación sonando ahora mismo" en plena llamada de Discord -- el bug
+            // reportado. Lo mismo pasaba con cualquier app apuntada a mano a otra salida.
+            //
+            // Enumerar de más es seguro acá porque la captura es POR PROCESO
+            // (ver ProcessLoopbackCapture: recibe el PID, no un dispositivo), así que grabar una app
+            // funciona igual sin importar por qué salida esté sonando. El dedup por PID de
+            // SelectDistinctActiveApps colapsa la misma app vista en varios dispositivos.
+            foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
             {
-                using var session = sessions[i];
-                TryAddCandidate(session, candidates);
+                using (device)
+                {
+                    try
+                    {
+                        var sessions = device.AudioSessionManager.Sessions;
+                        for (int i = 0; i < sessions.Count; i++)
+                        {
+                            using var session = sessions[i];
+                            TryAddCandidate(session, candidates);
+                        }
+                    }
+                    catch
+                    {
+                        // Un dispositivo con driver roto no puede tapar a los demás: se saltea ESE
+                        // nada más (mismo criterio que TryAddCandidate con una sesión suelta).
+                    }
+                }
             }
         }
         catch

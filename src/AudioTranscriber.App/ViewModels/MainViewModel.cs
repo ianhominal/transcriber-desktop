@@ -2190,10 +2190,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
             TryStartNextQueuedTranscription();
             return;
         }
+        // El aviso del cambio de motor se guarda para el REGISTRO de actividad y no solo se escribe
+        // en StatusMessage: la barra de estado la pisa el primer tick de `transcribeProgress`
+        // ("Transcribiendo '...'... 0%") unos milisegundos después, así que el aviso alcanzaba a
+        // aparecer y desaparecer sin que nadie lo leyera -- el motor cambiaba EN SILENCIO, justo lo
+        // que el comentario de arriba dice que no debe pasar. El registro no se pisa (y LogLines.Clear
+        // corre más abajo, por eso se agrega recién después).
+        string? engineSwitchNotice = null;
         if (sizeDecision == EngineDecision.SwitchToLocal)
         {
             Engine = "local";
-            StatusMessage = EngineSelector.Notice(sizeDecision, audio.SizeBytes)!;
+            engineSwitchNotice = EngineSelector.Notice(sizeDecision, audio.SizeBytes)!;
+            StatusMessage = engineSwitchNotice;
         }
 
         // ¿Este audio es además el seleccionado ahora mismo? Solo en ese caso tocamos TranscriptText
@@ -2219,6 +2227,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         // Dato de entrada: nombre y peso del audio.
         LogLines.Add($"[{DateTime.Now:HH:mm:ss}] Audio: {audio.FileName} — {audio.SizeText}");
+
+        // Cambio de motor por tamaño (ver `engineSwitchNotice` más arriba): queda asentado acá para
+        // que sobreviva al pisado de la barra de estado.
+        if (engineSwitchNotice is not null)
+            LogLines.Add($"[{DateTime.Now:HH:mm:ss}] {engineSwitchNotice}");
 
         // Reporta segmentos en streaming; Progress marshalea al hilo de UI.
         // El primer segmento marca que la descarga/carga terminó y ya está transcribiendo.
@@ -3203,8 +3216,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // "whisper-small (local)", hardcodeado; con LocalModelId="small" (default) el texto
             // sigue siendo BYTE A BYTE el mismo de antes, así que una nota exportada antes de este
             // cambio y otra exportada después con el default sin tocar tienen el mismo metadata.
+            // Sin audio local no se escribe la línea "tamaño:" del frontmatter (Size es string? y
+            // MarkdownExporter la omite si viene vacía): meter ahí el "Sin audio local" que muestra
+            // la lista sería texto donde se espera un peso. Una nota solo-texto simplemente no tiene
+            // tamaño de audio que declarar.
             var meta = new TranscriptMetadata(
-                date, audio.FileName, audio.SizeText,
+                date, audio.FileName, audio.HasAudio ? audio.SizeText : null,
                 Engine, IsGroq ? GroqModel : $"whisper-{LocalModelId} (local)");
             var content = MarkdownExporter.BuildMarkdown(meta, text, NoteTitle, NoteContext);
             var fileName = MarkdownExporter.BuildFileName(audio.FileName, date, _settings.ExportDateInName, NoteTitle);

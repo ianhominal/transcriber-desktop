@@ -1,4 +1,5 @@
 using System.IO;
+using AudioTranscriber.Core.Ui;
 using AudioTranscriber.Core.Workspaces;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -78,10 +79,13 @@ public partial class AudioItemVm : ObservableObject
         }
     }
 
-    /// <summary>Peso legible: KB o MB.</summary>
-    public string SizeText => SizeBytes >= 1024 * 1024
-        ? $"{SizeBytes / 1024.0 / 1024.0:0.0} MB"
-        : $"{SizeBytes / 1024.0:0} KB";
+    /// <summary>
+    /// Peso legible: KB o MB, o "Sin audio local" cuando no hay archivo de audio en esta PC (ver
+    /// <see cref="AudioSizeFormatter"/>). Antes esto era una interpolación inline que mostraba
+    /// "0 KB" para las notas sin audio local — un dato falso que apareció en un proyecto COMPARTIDO,
+    /// donde el otro miembro recibe el texto de las notas pero no los audios.
+    /// </summary>
+    public string SizeText => AudioSizeFormatter.Format(SizeBytes, HasAudio);
 
     /// <summary>Marca visual en la lista: ✓ si ya tiene transcript, ● si está pendiente.</summary>
     public string StatusGlyph => HasTranscript ? "✓" : "●";
