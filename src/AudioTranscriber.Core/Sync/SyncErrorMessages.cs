@@ -14,6 +14,7 @@ public static class SyncErrorMessages
         SyncErrorCategory.NeedsLogin => "Iniciá sesión",
         SyncErrorCategory.NetworkError => "Sin conexión",
         SyncErrorCategory.ServerError => "Error del servidor, reintentando…",
+        SyncErrorCategory.StorageError => "No se pudo leer la carpeta",
         _ => "Error de sincronización",
     };
 
@@ -27,6 +28,13 @@ public static class SyncErrorMessages
         SyncErrorCategory.NeedsLogin => "Iniciá sesión para sincronizar.",
         SyncErrorCategory.NetworkError => "Sin conexión. Reintentando cuando vuelva la red…",
         SyncErrorCategory.ServerError => "Error del servidor, reintentando…",
+        // A propósito nombra el sospechoso: la carpeta de trabajo dentro de OneDrive/Drive es de
+        // lejos la causa más común, y "revisá tu carpeta" es algo que la persona PUEDE hacer, a
+        // diferencia del mensaje genérico que solo la dejaba mirando un error.
+        SyncErrorCategory.StorageError =>
+            "No se pudo leer la carpeta de trabajo. Si está en OneDrive o Drive, puede estar " +
+            "sincronizando o sin descargar: probá de nuevo en un momento, o elegí una carpeta local " +
+            "desde Configuración.",
         _ => $"Error de sincronización: {exceptionMessage}",
     };
 }

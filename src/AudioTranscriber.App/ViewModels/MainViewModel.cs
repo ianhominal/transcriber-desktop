@@ -564,6 +564,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool CanDownloadDiarizationModels() => !IsBusy && !IsTranscribing && !IsDownloading && !IsDiarizationModelAvailable;
 
     /// <summary>
+    /// Por qué "Descargar modelos de hablantes" está apagado, o null si se puede tocar. Mismo patrón
+    /// que <see cref="TranscribeDisabledReason"/> y por el mismo motivo: una tester real vio el
+    /// aviso que dice "Descargalos", encontró el botón sin responder y concluyó que la app no le
+    /// mostraba forma de bajarlos. Estaba deshabilitado porque había una transcripción corriendo
+    /// (comparten el mismo <c>_cts</c>), pero nada se lo decía. Un control apagado sin motivo es un
+    /// callejón sin salida escrito por nosotros.
+    /// </summary>
+    public string? DiarizationDownloadDisabledReason
+    {
+        get
+        {
+            if (IsDiarizationModelAvailable) return null;
+            if (IsTranscribing) return "Se puede descargar cuando termine la transcripción en curso.";
+            if (IsDownloading) return "Ya hay una descarga en curso.";
+            if (IsBusy) return "Esperá a que termine lo que está corriendo.";
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Baja el/los modelo/s de identificación de hablantes que falten. Reusa IsBusy/IsDownloading/
     /// DownloadPercent (mismas propiedades del footer) y el mismo CancelCommand que
     /// <see cref="DownloadModelAsync"/> -- son descargas chicas (decenas de MB, no 1,5 GB), pero
@@ -878,6 +898,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(DownloadModelCommand))]
     [NotifyCanExecuteChangedFor(nameof(DownloadDiarizationModelsCommand))]
     [NotifyPropertyChangedFor(nameof(IsBusyOrTranscribing))]
+    [NotifyPropertyChangedFor(nameof(DiarizationDownloadDisabledReason))]
     [NotifyPropertyChangedFor(nameof(TaskbarState))]
     private bool _isBusy;
 
@@ -894,6 +915,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(DownloadModelCommand))]
     [NotifyCanExecuteChangedFor(nameof(DownloadDiarizationModelsCommand))]
     [NotifyPropertyChangedFor(nameof(IsBusyOrTranscribing))]
+    [NotifyPropertyChangedFor(nameof(DiarizationDownloadDisabledReason))]
     [NotifyPropertyChangedFor(nameof(TranscribeIndeterminate))]
     [NotifyPropertyChangedFor(nameof(TaskbarState))]
     private bool _isTranscribing;

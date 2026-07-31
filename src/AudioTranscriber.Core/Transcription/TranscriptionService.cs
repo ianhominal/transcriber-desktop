@@ -29,6 +29,13 @@ public sealed class TranscriptionService : IAsyncDisposable
     /// </summary>
     public string? LastConvertedWavPath { get; private set; }
 
+    /// <summary>
+    /// True si la última transcripción se cortó sola porque Whisper entró en un loop de alucinación
+    /// (ver <see cref="RepetitionLoopDetector"/>). El texto devuelto es lo que se alcanzó a sacar,
+    /// ya colapsado -- el caller debería avisarle a la persona en vez de guardarlo como si nada.
+    /// </summary>
+    public bool LastRunStoppedOnRepetitionLoop { get; private set; }
+
     public TranscriptionService(WhisperModelProvider modelProvider, AudioConverter? converter = null)
     {
         _modelProvider = modelProvider ?? throw new ArgumentNullException(nameof(modelProvider));
@@ -61,6 +68,7 @@ public sealed class TranscriptionService : IAsyncDisposable
 
         var totalSw = Stopwatch.StartNew();
         var sw = new Stopwatch();
+        LastRunStoppedOnRepetitionLoop = false;
 
         // 1) Asegurar el modelo (descarga si falta)
         if (!_modelProvider.IsModelAvailable)
@@ -80,8 +88,15 @@ public sealed class TranscriptionService : IAsyncDisposable
             onLog?.Report("Modelo ya cargado en memoria (reutilizado).");
         }
 
+        // WithNoContext: NO usar el texto del segmento anterior como prompt del siguiente. Es el
+        // arreglo de fondo del loop de alucinación (ver RepetitionLoopDetector): con el contexto
+        // activado -- el default de Whisper -- una frase inventada entra como prompt del segmento
+        // que sigue, que la refuerza, y el modelo se muerde la cola hasta el final del audio. Un
+        // caso real devolvió la misma oración en galés cientos de veces sobre un mp4 casi mudo.
+        // Se pierde algo de coherencia entre segmentos largos; a cambio, no se entrega basura.
         await using var processor = _factory.CreateBuilder()
             .WithLanguage(Language)
+            .WithNoContext()
             .Build();
 
         var tempWav = Path.Combine(Path.GetTempPath(), "at_" + Guid.NewGuid().ToString("N") + ".wav");
@@ -101,6 +116,7 @@ public sealed class TranscriptionService : IAsyncDisposable
             onLog?.Report("Transcribiendo… (en CPU esto puede tardar)");
             sw.Restart();
             var sb = new StringBuilder();
+            var loopDetector = new RepetitionLoopDetector();
             await using var wavStream = File.OpenRead(tempWav);
             await foreach (var segment in processor.ProcessAsync(wavStream, ct).ConfigureAwait(false))
             {
@@ -113,6 +129,18 @@ public sealed class TranscriptionService : IAsyncDisposable
                     var percent = Math.Min(100.0, segment.End / totalDuration * 100.0);
                     onProgress?.Report(percent);
                 }
+
+                // Segunda puerta contra el loop de alucinación, por si aparece igual con el contexto
+                // desactivado: cortamos acá en vez de gastar minutos de CPU para devolver la misma
+                // frase repetida mil veces. La persona prefiere saberlo ya.
+                if (loopDetector.Observe(segment.Text))
+                {
+                    LastRunStoppedOnRepetitionLoop = true;
+                    onLog?.Report(
+                        "Se detuvo la transcripción: el audio no tiene habla clara y el modelo empezó " +
+                        "a repetir la misma frase.");
+                    break;
+                }
             }
 
             onProgress?.Report(100.0);
@@ -123,7 +151,9 @@ public sealed class TranscriptionService : IAsyncDisposable
                 $"Listo en {sw.Elapsed.TotalSeconds:0.0}s de transcripción " +
                 $"({speed:0.0}x el largo del audio). Total: {totalSw.Elapsed.TotalSeconds:0.0}s.");
 
-            return sb.ToString().Trim();
+            // Colapsa la frase alucinada si el loop llegó a acumular repeticiones antes del corte
+            // (o si apareció sin llegar al umbral del detector). Un texto sano vuelve intacto.
+            return TranscriptSanitizer.CollapseRepeatedSentences(sb.ToString().Trim()) ?? string.Empty;
         }
         finally
         {

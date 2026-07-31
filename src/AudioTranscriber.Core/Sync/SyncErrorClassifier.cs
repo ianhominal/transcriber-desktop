@@ -23,6 +23,14 @@ public enum SyncErrorCategory
     /// <summary>El backend respondió pero con un error del lado del servidor (5xx).</summary>
     ServerError,
 
+    /// <summary>
+    /// No se pudo leer o escribir en disco: la carpeta desapareció, no hay permisos, o un archivo
+    /// está tomado por otro proceso. El caso típico es una carpeta de trabajo dentro de OneDrive o
+    /// Drive (bloqueo mientras sincroniza, placeholders de "Archivos a pedido", copias en conflicto).
+    /// Antes caía en <see cref="Unknown"/> y la persona solo veía "Error de sincronización".
+    /// </summary>
+    StorageError,
+
     /// <summary>Cualquier otro error no clasificado (bug del cliente, deserialización, etc.).</summary>
     Unknown,
 }
@@ -40,8 +48,14 @@ public static class SyncErrorClassifier
         if (IsServerError(ex))
             return SyncErrorCategory.ServerError;
 
+        // La red se evalúa ANTES que el almacenamiento a propósito: varias excepciones de red
+        // (SocketException, y HttpRequestException con inner de I/O) andan cerca de IOException, y
+        // un problema de conexión no puede terminar diciéndole a la persona que revise su carpeta.
         if (IsNetworkError(ex))
             return SyncErrorCategory.NetworkError;
+
+        if (IsStorageError(ex))
+            return SyncErrorCategory.StorageError;
 
         return SyncErrorCategory.Unknown;
     }
@@ -67,4 +81,11 @@ public static class SyncErrorClassifier
         || ex is TaskCanceledException
         || ex is OperationCanceledException
         || ex is System.Net.Sockets.SocketException;
+
+    // Disco: carpeta que desapareció (OneDrive la movió o la dejó offline), archivo tomado por otro
+    // proceso (OneDrive subiéndolo, o el índice SQLite abierto), o permisos. UnauthorizedAccessException
+    // NO hereda de IOException, por eso va aparte.
+    private static bool IsStorageError(Exception ex) =>
+        ex is IOException
+        || ex is UnauthorizedAccessException;
 }

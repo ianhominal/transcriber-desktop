@@ -30,9 +30,18 @@ public sealed class SyncIndex
         EnsureSchema();
     }
 
-    /// <summary>Ruta por defecto del índice dentro de una carpeta sincronizada.</summary>
+    /// <summary>
+    /// Ruta del índice para una carpeta sincronizada. Ya NO vive adentro de esa carpeta: el baseline
+    /// es por máquina y una carpeta que se sincroniza sola (OneDrive, Drive) lo bloquea, lo deja
+    /// como placeholder o lo replica a otra computadora. Ver <see cref="SyncIndexLocation"/> para el
+    /// caso real que lo motivó.
+    ///
+    /// Toca el disco: crea la carpeta destino y migra el índice viejo la primera vez. Nunca tira.
+    /// </summary>
     public static string DefaultPathFor(string syncRootPath) =>
-        Path.Combine(syncRootPath, ".synccache", "index.db");
+        SyncIndexLocation.EnsureLocalDb(
+            syncRootPath,
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
 
     private void EnsureSchema()
     {

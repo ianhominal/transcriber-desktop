@@ -639,9 +639,22 @@
                             <StackPanel>
                                 <TextBlock TextWrapping="Wrap" FontSize="13" LineHeight="19" Foreground="{DynamicResource AccentText}"
                                            Text="Activaste 'Identificar quién habla', pero todavía faltan los modelos (chicos: decenas de MB, se bajan en segundos). Descargalos para que la próxima transcripción salga separada por persona."/>
+                                <!-- ToolTipService.ShowOnDisabled: el motivo se lee JUSTO cuando el
+                                     botón está apagado, que es cuando importa. Mismo criterio que
+                                     "Transcribir" de más abajo, y por el mismo motivo real: el
+                                     aviso dice "Descargalos", el botón no responde mientras hay una
+                                     transcripción corriendo, y sin explicación parece que la app no
+                                     ofreciera forma de bajarlos. -->
                                 <Button Content="Descargar modelos de hablantes" Style="{StaticResource SecondaryButton}"
                                         Margin="0,8,0,0" Padding="10,5" FontSize="12" HorizontalAlignment="Left"
+                                        ToolTipService.ShowOnDisabled="True"
+                                        ToolTip="{Binding DiarizationDownloadDisabledReason}"
                                         Command="{Binding DownloadDiarizationModelsCommand}"/>
+                                <!-- El motivo, además, VISIBLE: un tooltip no existe para quien usa
+                                     la app con el dedo o no pasa el mouse por encima. -->
+                                <TextBlock Text="{Binding DiarizationDownloadDisabledReason}" TextWrapping="Wrap"
+                                           Margin="0,6,0,0" FontSize="12" Foreground="{DynamicResource AccentText}"
+                                           Visibility="{Binding DiarizationDownloadDisabledReason, Converter={StaticResource CountToVisibility}, ConverterParameter=Invert}"/>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -1084,6 +1097,7 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="{Binding StatusMessage}"
                            VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}"
@@ -1125,6 +1139,17 @@
                              Foreground="{DynamicResource Accent}" Background="{DynamicResource SurfaceAlt}"
                              BorderThickness="0"
                              Visibility="{Binding IsTranscribing, Converter={StaticResource BoolToVisibility}}"/>
+
+                <!-- Cancelar, JUNTO AL PROGRESO. El mismo CancelCommand ya existía en el panel
+                     izquierdo (Row 4, debajo de "Transcribir"), pero una tester real miró este
+                     footer, que es donde se ve el avance, y concluyó que no se podía frenar:
+                     "siento que tengo que esperar una eternidad y está mandando fruta". La acción
+                     de frenar tiene que estar donde se mira el progreso, no en otro panel. -->
+                <Button Grid.Column="4" Content="Cancelar" Style="{StaticResource SecondaryButton}"
+                        Margin="10,0,0,0" Padding="12,4" FontSize="12" VerticalAlignment="Center"
+                        Command="{Binding CancelCommand}"
+                        AutomationProperties.Name="Cancelar la transcripción en curso"
+                        Visibility="{Binding IsBusyOrTranscribing, Converter={StaticResource BoolToVisibility}}"/>
             </Grid>
         </Border>
         </Grid>
