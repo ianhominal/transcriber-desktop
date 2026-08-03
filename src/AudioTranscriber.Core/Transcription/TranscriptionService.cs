@@ -74,6 +74,9 @@ public sealed class TranscriptionService : IAsyncDisposable
         if (!_modelProvider.IsModelAvailable)
             onLog?.Report("Modelo no encontrado: descargando (una única vez)…");
         var modelPath = await _modelProvider.EnsureModelAsync(onDownload, ct).ConfigureAwait(false);
+        onLog?.Report(
+            $"Modelo listo en disco: '{Path.GetFileName(modelPath)}' " +
+            $"({new FileInfo(modelPath).Length / 1024.0 / 1024.0:0} MB).");
 
         // 2) Cargar el modelo en memoria (la primera vez de la sesión es lo más pesado)
         if (_factory is null)
@@ -109,14 +112,19 @@ public sealed class TranscriptionService : IAsyncDisposable
         try
         {
             // 3) Convertir el audio al formato de Whisper (WAV 16 kHz mono)
-            onLog?.Report($"Convirtiendo audio ({Path.GetExtension(audioPath).TrimStart('.').ToUpperInvariant()})…");
+            var extension = Path.GetExtension(audioPath).TrimStart('.').ToUpperInvariant();
+            var sourceBytes = new FileInfo(audioPath).Length;
+            onLog?.Report(
+                $"Convirtiendo audio ({extension}, {sourceBytes / 1024.0 / 1024.0:0.0} MB) a WAV 16 kHz mono…");
             sw.Restart();
             _converter.ToWhisperWav(audioPath, tempWav, ct);
 
             TimeSpan totalDuration;
             using (var probe = new WaveFileReader(tempWav))
                 totalDuration = probe.TotalTime;
-            onLog?.Report($"Audio convertido en {sw.Elapsed.TotalSeconds:0.0}s (duración {totalDuration.TotalSeconds:0}s).");
+            onLog?.Report(
+                $"Audio convertido en {sw.Elapsed.TotalSeconds:0.0}s " +
+                $"(duración {totalDuration.TotalSeconds:0}s, WAV de {new FileInfo(tempWav).Length / 1024.0 / 1024.0:0.0} MB).");
 
             // 4) Transcribir en streaming
             onLog?.Report("Transcribiendo… (en CPU esto puede tardar)");

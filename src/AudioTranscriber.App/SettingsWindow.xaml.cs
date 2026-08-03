@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
@@ -382,6 +383,29 @@ public partial class SettingsWindow : Window
     }
 
     private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+
+    /// <summary>
+    /// Abre en el Explorador la carpeta donde viven todos los registros de la app
+    /// (<c>%LocalAppData%\AudioTranscriber\logs</c>). Crea la carpeta si todavía no existe: sin
+    /// esto, en una instalación recién hecha el botón no haría nada y parecería roto.
+    /// </summary>
+    private void OnOpenLogsClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var carpeta = TranscriptionLogger.LogDirectory;
+            Directory.CreateDirectory(carpeta);
+            Process.Start(new ProcessStartInfo { FileName = carpeta, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"No se pudo abrir la carpeta de registros.\n\n{TranscriptionLogger.LogDirectory}\n\nDetalle: {ex.Message}",
+                "Registros",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
 
     /// <summary>Abre la gestión NATIVA de vocabulario (ver <see cref="VocabularyWindow"/>).</summary>
     private void OnOpenVocabularyClick(object sender, RoutedEventArgs e) =>

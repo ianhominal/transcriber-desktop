@@ -393,6 +393,25 @@
             </StackPanel>
         </Border>
 
+        <!-- Diagnóstico: cuando algo falla, pedirle a alguien que navegue hasta
+             %LocalAppData%\AudioTranscriber\logs es pedirle demasiado. Un botón que abre la carpeta
+             en el Explorador convierte "mandame los logs" en dos clics. -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Diagnóstico" Style="{StaticResource SectionLabel}" Margin="2,0,0,10"/>
+
+                <TextBlock Text="Si algo falla, acá quedan los registros de la app: transcripción, sincronización, arranque y errores."
+                           TextWrapping="Wrap" FontSize="12"
+                           Foreground="{DynamicResource TextMuted}" Margin="0,0,0,10"/>
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="OpenLogsButton" Content="Abrir carpeta de registros"
+                            Style="{StaticResource SecondaryButton}"
+                            Click="OnOpenLogsClick"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
         <Button Content="Cerrar" Style="{StaticResource PrimaryButton}"
                 HorizontalAlignment="Right" Click="OnCloseClick"/>
 

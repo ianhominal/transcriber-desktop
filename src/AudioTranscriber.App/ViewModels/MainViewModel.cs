@@ -2243,9 +2243,24 @@ public partial class MainViewModel : ObservableObject, IDisposable
         ElapsedText = "00:00";
         _elapsedTimer.Start();
 
-        // Registro de actividad con hora. Marshalea al hilo de UI.
+        // Registro de actividad con hora. Marshalea al hilo de UI, y AHORA además va a disco
+        // (TranscriptionLogger): hasta 2026-08-03 este log vivía solo en pantalla y se perdía al
+        // cerrar la app, así que ante un "no me deja transcribir nada" no quedaba NADA para leer.
         var log = new Progress<string>(line =>
-            LogLines.Add($"[{DateTime.Now:HH:mm:ss}] {line}"));
+        {
+            LogLines.Add($"[{DateTime.Now:HH:mm:ss}] {line}");
+            TranscriptionLogger.Step(line);
+        });
+
+        // Encabezado en disco con todo el contexto del intento (archivo, tamaño, motor, modelo,
+        // idioma, versión): es lo primero que hace falta para entender el resto de las líneas.
+        TranscriptionLogger.Start(
+            audio.FileName,
+            audio.SizeBytes,
+            Engine,
+            IsGroq ? GroqModel : LocalModelId,
+            Language,
+            UseDiarization);
 
         // Dato de entrada: nombre y peso del audio.
         LogLines.Add($"[{DateTime.Now:HH:mm:ss}] Audio: {audio.FileName} — {audio.SizeText}");
@@ -2361,10 +2376,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
             if (mdPath is not null)
                 StatusMessage = $"Listo. Nota .md exportada a {mdPath}";
 
+            TranscriptionLogger.Success(_elapsedSw.Elapsed, text?.Length ?? 0);
             SystemSounds.Asterisk.Play(); // aviso de que terminó
         }
         catch (OperationCanceledException)
         {
+            // Cancelar es una decisión de la persona, no una falla: en el log se distingue para no
+            // confundir "la app se rompió" con "hizo lo que le pedí".
+            TranscriptionLogger.Cancelled(_elapsedSw.Elapsed);
             StatusMessage = _queueWasClearedByCancel
                 ? "Transcripción cancelada, cola vaciada."
                 : "Transcripción cancelada.";
@@ -2372,6 +2391,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            // El mensaje que ve la persona es amable y sin rutas; el log se queda con el detalle
+            // completo (tipo, inner y stack), que es lo que hace falta para diagnosticar de lejos.
+            TranscriptionLogger.Failure(ex);
             // A.7 (DESIGN-REVIEW-2026-07-16.md): este era el ÚNICO de ~24 sitios de error de la app
             // que mandaba ex.Message crudo a StatusMessage (inglés, rutas locales expuestas con el
             // motor Local) y ni siquiera quedaba registrado en el log de crashes. Mismo molde que
