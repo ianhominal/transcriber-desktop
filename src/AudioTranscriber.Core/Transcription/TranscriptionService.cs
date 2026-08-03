@@ -78,10 +78,16 @@ public sealed class TranscriptionService : IAsyncDisposable
         // 2) Cargar el modelo en memoria (la primera vez de la sesión es lo más pesado)
         if (_factory is null)
         {
+            // `WhisperFactory.FromPath` es sincrónico y NO acepta un CancellationToken: cargar el
+            // modelo "El mejor" (1 GB) del disco no se puede abortar a mitad de camino. Lo que sí
+            // se puede es no empezar si ya cancelaron, y cortar apenas termina en vez de seguir
+            // con una transcripción que la persona ya no quiere.
+            ct.ThrowIfCancellationRequested();
             onLog?.Report("Cargando modelo en memoria…");
             sw.Restart();
             _factory = WhisperFactory.FromPath(modelPath);
             onLog?.Report($"Modelo cargado en {sw.Elapsed.TotalSeconds:0.0}s.");
+            ct.ThrowIfCancellationRequested();
         }
         else
         {

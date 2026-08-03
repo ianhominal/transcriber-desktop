@@ -28,9 +28,9 @@ public sealed class AudioConverter
         if (ext is ".ogg" or ".opus")
             ConvertOpusOgg(inputPath, outputPath, ct);
         else if (ext is ".mp4" or ".m4a" or ".aac" or ".webm")
-            ConvertWithMediaFoundation(inputPath, outputPath);
+            ConvertWithMediaFoundation(inputPath, outputPath, ct);
         else
-            ConvertWithNAudio(inputPath, outputPath);
+            ConvertWithNAudio(inputPath, outputPath, ct);
     }
 
     /// <summary>
@@ -39,20 +39,20 @@ public sealed class AudioConverter
     /// Workspace.SupportedExtensions) también se decodifica acá: Media Foundation lo abre
     /// directamente en este entorno, sin necesitar un demuxer WebM/Matroska propio.
     /// </summary>
-    private static void ConvertWithMediaFoundation(string inputPath, string outputPath)
+    private static void ConvertWithMediaFoundation(string inputPath, string outputPath, CancellationToken ct)
     {
         using var reader = new MediaFoundationReader(inputPath);
         ISampleProvider mono = ToMono(reader.ToSampleProvider());
-        WriteResampled16(mono, outputPath);
+        WriteResampled16(mono, outputPath, ct);
     }
 
     /// <summary>Camino para mp3/wav (formatos que NAudio decodifica de forma nativa).</summary>
-    private static void ConvertWithNAudio(string inputPath, string outputPath)
+    private static void ConvertWithNAudio(string inputPath, string outputPath, CancellationToken ct)
     {
         using var reader = new AudioFileReader(inputPath);
 
         ISampleProvider mono = ToMono(reader);
-        WriteResampled16(mono, outputPath);
+        WriteResampled16(mono, outputPath, ct);
     }
 
     /// <summary>
@@ -86,7 +86,7 @@ public sealed class AudioConverter
 
         using var raw = new RawSourceWaveStream(
             new MemoryStream(bytes), new WaveFormat(decodeRate, 16, 1));
-        WriteResampled16(raw.ToSampleProvider(), outputPath);
+        WriteResampled16(raw.ToSampleProvider(), outputPath, ct);
     }
 
     /// <summary>Mezcla a mono si hace falta (soporta mono o estéreo).</summary>
@@ -98,13 +98,35 @@ public sealed class AudioConverter
             $"El audio tiene {source.WaveFormat.Channels} canales; solo se soportan mono o estéreo."),
     };
 
-    /// <summary>Resamplea a 16 kHz (si hace falta) y escribe WAV PCM 16-bit.</summary>
-    private static void WriteResampled16(ISampleProvider source, string outputPath)
+    /// <summary>
+    /// Resamplea a 16 kHz (si hace falta) y escribe WAV PCM 16-bit, atendiendo la cancelación.
+    ///
+    /// Escribe por bloques en vez de usar <c>WaveFileWriter.CreateWaveFile16</c>, que lee el stream
+    /// entero y escribe el archivo de una sola vez: no deja NINGÚN punto donde mirar el token. Con
+    /// eso, apretar "Cancelar" durante "convirtiendo audio y cargando modelo" no hacía nada, y la
+    /// persona se quedaba esperando a que terminara igual. Un bloque de un segundo de audio es
+    /// suficientemente chico para que la cancelación se sienta inmediata.
+    /// </summary>
+    private static void WriteResampled16(ISampleProvider source, string outputPath, CancellationToken ct)
     {
         ISampleProvider resampled = source.WaveFormat.SampleRate == TargetSampleRate
             ? source
             : new WdlResamplingSampleProvider(source, TargetSampleRate);
 
-        WaveFileWriter.CreateWaveFile16(outputPath, resampled);
+        ct.ThrowIfCancellationRequested();
+
+        using var writer = new WaveFileWriter(
+            outputPath,
+            new WaveFormat(TargetSampleRate, 16, resampled.WaveFormat.Channels));
+
+        var buffer = new float[TargetSampleRate * resampled.WaveFormat.Channels];
+        int leidos;
+        while ((leidos = resampled.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            // El writer es PCM 16-bit, así que NAudio convierte las muestras float al escribirlas
+            // (lo mismo que hacía CreateWaveFile16 por dentro).
+            writer.WriteSamples(buffer, 0, leidos);
+        }
     }
 }
