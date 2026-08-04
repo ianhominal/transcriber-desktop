@@ -737,8 +737,15 @@ public sealed class SyncEngine
             // largo en RunAsync) para que no quede una entrada huérfana bajo el id viejo, que se
             // pushearía como duplicado.
             _index.RekeyBaseline(previousId, canonicalId);
+            // `with { Id = canonicalId }`: mover el valor a la clave nueva NO alcanza, porque el
+            // item conserva su propio `Id` adentro y `SaveBaseline` inserta por ESE campo, no por
+            // la clave. Sin esto quedaban dos entradas del diccionario con el mismo `Id` y el
+            // INSERT de fin de ciclo moría con "UNIQUE constraint failed: SyncBaseline.Id",
+            // abortando la transacción entera: la baseline no volvía a avanzar nunca (caso real,
+            // ver sync-20260803.log). Además deshacía el RekeyBaseline recién aplicado en SQLite,
+            // porque el save de fin de ciclo re-insertaba la fila con el id viejo.
             if (baseline.Remove(previousId, out var movedEntry))
-                baseline[canonicalId] = movedEntry;
+                baseline[canonicalId] = movedEntry with { Id = canonicalId };
         }
 
         idOverrides[pathKey] = canonicalId;

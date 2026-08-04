@@ -180,7 +180,13 @@ public sealed class SyncIndex
             del.ExecuteNonQuery();
         }
 
-        foreach (var item in baseline.Values)
+        // Dedupe defensivo por `item.Id` (ver SyncBaselineIntegrity): el INSERT usa ese campo, no la
+        // clave del diccionario, y un choque de PK acá aborta la transacción COMPLETA — o sea, la
+        // baseline deja de avanzar para siempre, no solo en este ciclo. Le pasó a una usuaria real
+        // (UNIQUE constraint failed: SyncBaseline.Id, cada minuto durante todo un día). La causa de
+        // origen ya está corregida en ReconcileIdentityRow; esto asegura que un bug equivalente
+        // degrade a "se pierde una entrada, el próximo ciclo la reconstruye" y no a "sync muerto".
+        foreach (var item in SyncBaselineIntegrity.DeduplicateById(baseline))
         {
             using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
